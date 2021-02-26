@@ -1,0 +1,13 @@
+
+  source half_kite depth 5
+  angle_deg 0
+  scale_long_side 6.0
+  line_inset 0.5
+  finished_rect_dims 13 13
+  center_verts 6 30 31 37
+  border_allowance 0.5
+  border_width 3.0
+  binding_width 0.5
+  nudge 0 0.25
+  
+
