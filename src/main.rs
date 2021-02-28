@@ -503,6 +503,7 @@ struct HalfTile {
 
 impl HalfTile {
 
+    // get line index for line connecting vertices at vidx[a] and vidx[b]
     fn get_lidx(&self, a: usize, b: usize) -> usize {
 
         debug_assert!(a < 3);
@@ -523,8 +524,8 @@ impl HalfTile {
     }
 
     // get verts from external vec using my indices 
-    fn get_verts<'a, 'b>(&'a self, verts: &'b Vec<Point2d>) 
-                         -> (&'b Point2d, &'b Point2d, &'b Point2d) 
+    fn get_verts<'a, 'b>(&'a self, verts: &'b Vec<Point2d>) ->
+        (&'b Point2d, &'b Point2d, &'b Point2d) 
     {
         (&verts[self.vidx[0]],
          &verts[self.vidx[1]],
@@ -549,8 +550,6 @@ impl HalfTile {
     }
 
 }
-
-
 
 //////////////////////////////////////////////////////////////////////
 // misc data structures for tilings
@@ -676,6 +675,7 @@ impl PenroseTiling {
 
     }
 
+    // get a label for a half-tile at given index
     fn label_for_htile_idx(&self, tidx: usize) -> String {
         self.htiles[tidx].label(self.generations.len())
     }
@@ -1030,23 +1030,16 @@ impl PenroseTiling {
 
 //////////////////////////////////////////////////////////////////////
 
-// module visibility 
-#[derive(Debug,PartialEq,Clone,Copy)]
-enum Visibility {
-    Invisible, // no child leaf modules overlap view rect
-    Partial,   // some child leaf modules overlap view rect
-    Full       // all child leaf modules overlap view rect
-}
-
+// intervals along a Line
 #[derive(Debug, Clone)]
-struct VertexInterval {
+struct LineInterval {
     u0: f64,
     u1: f64,
     vidx0: usize,
     vidx1: usize
 }
 
-impl VertexInterval {
+impl LineInterval {
 
     fn is_valid(&self) -> bool {
         
@@ -1057,7 +1050,7 @@ impl VertexInterval {
     }
 
     fn empty() -> Self {
-        VertexInterval {
+        LineInterval {
             u0: 1.0,
             u1: 0.0,
             vidx0: usize::MAX,
@@ -1103,7 +1096,7 @@ impl VertexInterval {
                 (other.u1, other.vidx1)
             };
 
-            VertexInterval { u0: u0, vidx0: vidx0, u1: u1, vidx1: vidx1 }
+            LineInterval { u0: u0, vidx0: vidx0, u1: u1, vidx1: vidx1 }
 
         }
             
@@ -1112,18 +1105,23 @@ impl VertexInterval {
             
 }
 
-#[derive(Debug)]
-struct SeamDrawInfo {
-    lidx: usize,
-    vidx0: usize,
-    vidx1: usize,
+// default interval is empty (for or_default() below)
+impl Default for LineInterval {
+    fn default() -> Self {
+        LineInterval::empty()
+    }
 }
+
+//////////////////////////////////////////////////////////////////////
+// a seam has an interval along a line that we will sew.
+// also store a bunch of derived quantities to figure 
+// out how to stich modules together.
 
 #[derive(Debug)]
 struct Seam {
 
     lidx:  usize,
-    interval: VertexInterval,
+    interval: LineInterval,
 
     tidx:  usize,
 
@@ -1143,7 +1141,7 @@ impl Seam {
            pmid: &Point2d,
            precis: f64,
            lidx: usize, 
-           interval: VertexInterval) -> Self {
+           interval: LineInterval) -> Self {
 
         debug_assert!(interval.is_valid());
 
@@ -1185,38 +1183,24 @@ impl Seam {
 
 }
 
-struct LineSideInfo {
-    interval: VertexInterval
-}
-
-impl LineSideInfo {
-
-    fn new() -> Self {
-        LineSideInfo {
-            interval: VertexInterval::empty(),
-        }
-    }
-
-    fn insert(&mut self, u0: f64, vidx0: usize, u1: f64, vidx1: usize) {
-
-        self.interval.expand(u0, vidx0);
-        self.interval.expand(u1, vidx1);
-        
-    }
-    
-}
-
-impl Default for LineSideInfo {
-
-    fn default() -> Self { LineSideInfo::new() }
-
-}
-
+// derived quantities for visible top-level modules in design
 struct ModuleInfo {
     tidx: usize,
     centroid: Vec3d,
     edge_list: Vec<VIdxPair>
 }
+
+// just the information we need to draw a seam
+#[derive(Debug)]
+struct SeamDrawInfo {
+    lidx: usize,
+    vidx0: usize,
+    vidx1: usize,
+}
+
+//////////////////////////////////////////////////////////////////////
+// given module_info and indices into it, get a list of external
+// vertex indices (we will later find Lines which pass thru some).
 
 fn get_external_vertices(module_info: &Vec<ModuleInfo>,
                          available_modules: &Vec<usize>) -> Vec<usize>
@@ -1249,17 +1233,19 @@ fn get_external_vertices(module_info: &Vec<ModuleInfo>,
 
 }
 
+//////////////////////////////////////////////////////////////////////
+// grab derived quantities of visible top level modules
 
 fn get_module_info(pt: &PenroseTiling,
                    child_leafs: &Vec<Vec<usize>>,
-                   visible_top_level_htiles: &Vec<usize>,
+                   visible_top_level_modules: &Vec<usize>,
                    vvec: &Vec<Point2d>) ->
     Vec<ModuleInfo>
 {
 
     let mut module_info = vec![];
 
-    for &tidx in visible_top_level_htiles {
+    for &tidx in visible_top_level_modules {
 
         let htile = &pt.htiles[tidx];
 
@@ -1312,10 +1298,20 @@ fn get_module_info(pt: &PenroseTiling,
     
 }
 
-fn find_best_seam(seams: &Vec<Seam>,
-                  lines: &Vec<Line>,
-                  external_verts: &Vec<usize>,
-                  available_seams: &Vec<usize>) ->
+//////////////////////////////////////////////////////////////////////
+// greedily search among available seams for the seam most evenly
+// splits the other available seams -- i.e. the one that maximizes
+// the minimum # of seams to one side or the other.
+//
+// in case of a tie, prefer longer seams.
+//
+// return index of best seam and array of lists of seams to either
+// side.
+
+fn greedy_seam_search(seams: &Vec<Seam>,
+                      lines: &Vec<Line>,
+                      external_verts: &Vec<usize>,
+                      available_seams: &Vec<usize>) ->
     (usize, [Vec<usize>; 2])
 
 {
@@ -1367,11 +1363,6 @@ fn find_best_seam(seams: &Vec<Seam>,
 
             let score = (min_seams, seam.length);
 
-            /*
-            println!("seam L{:} has score ({:},{:}) with {:} seams to left, {:} to right",
-                     seams[sidx].lidx, min_seams, seam.length, splits[0].len(), splits[1].len());
-            */
-
             if best_sidx == usize::MAX || score > best_score {
                 best_score = score;
                 best_sidx = sidx;
@@ -1382,49 +1373,53 @@ fn find_best_seam(seams: &Vec<Seam>,
 
     }
 
-    /*
-    println!("best was seam L{:} with score ({:}, {:})",
-             seams[best_sidx].lidx, best_score.0, best_score.1);
-    */
-
     debug_assert!(best_sidx != usize::MAX);
 
     (best_sidx, best_splits)
 
 }
 
+//////////////////////////////////////////////////////////////////////
+// seam tree datastructure 
+
 #[derive(Debug,Clone,Copy)]
-enum TreeChild {
+enum SeamChild {
     Empty,
     Module(usize),
     Seam(usize)
 }
 
 #[derive(Debug,Clone,Copy)]
-struct TreeSeamInfo {
+struct SeemTreeInfo {
     depth: usize,
     parent_sidx: usize,
-    children: [TreeChild; 2]
+    children: [SeamChild; 2]
 }
 
-impl Default for TreeSeamInfo {
+impl Default for SeemTreeInfo {
     fn default() -> Self { 
-        TreeSeamInfo { 
+        SeemTreeInfo { 
             depth: usize::MAX, 
             parent_sidx: usize::MAX, 
-            children: [ TreeChild::Empty, TreeChild::Empty ]
+            children: [ SeamChild::Empty, SeamChild::Empty ]
         }
     }
 }
 
-fn subdivide_r(pt: &PenroseTiling,
-               seams: &Vec<Seam>,
-               module_info: &Vec<ModuleInfo>,
-               available_modules: Vec<usize>,
-               available_seams: Vec<usize>,
-               depth: usize, 
-               parent_sidx: usize,
-               tree_seam_info: &mut Vec<TreeSeamInfo>) -> usize
+//////////////////////////////////////////////////////////////////////
+// write exactly one tree noee in seam_tree
+// 
+// precondition: we have at least one available seam & at least two 
+// available modules
+
+fn build_seam_tree_r(pt: &PenroseTiling,
+                     seams: &Vec<Seam>,
+                     module_info: &Vec<ModuleInfo>,
+                     available_modules: Vec<usize>,
+                     available_seams: Vec<usize>,
+                     depth: usize, 
+                     parent_sidx: usize,
+                     seam_tree: &mut Vec<SeemTreeInfo>) -> usize
 
 {
 
@@ -1435,12 +1430,14 @@ fn subdivide_r(pt: &PenroseTiling,
     let external_verts = get_external_vertices(
         module_info, &available_modules);
 
+    // greedy search for best splitting seam
+    // seam_splits allocates other seam indices to left/right of this
+    // (mutable because we trash it on recursive call)
+    let (sidx, mut seam_splits) = greedy_seam_search(
+        seams, &pt.lines, 
+        &external_verts, &available_seams);
 
-    // find all the seams that contain external vertices
-    let (sidx, mut seam_splits) = find_best_seam(seams, &pt.lines, 
-                                             &external_verts, &available_seams);
-
-    
+    // pretty-print tree as we build it
     let indent = "  ".repeat(depth);
 
     println!("{:}L{:}{:}", indent, seams[sidx].lidx,
@@ -1450,6 +1447,8 @@ fn subdivide_r(pt: &PenroseTiling,
                  format!(" (child of L{:})", seams[parent_sidx].lidx)
              });
 
+    // figure out which available modules are left/right of the chosen
+    // seam
     let seam = &seams[sidx];
 
     let mut module_splits = [vec![], vec![]];
@@ -1464,15 +1463,21 @@ fn subdivide_r(pt: &PenroseTiling,
 
     }
 
-    let mut children = [ TreeChild::Empty, TreeChild::Empty ];
+    // for setting node later
+    let mut children = [ SeamChild::Empty, SeamChild::Empty ];
 
+    // for each (left/right) side of the currently selected seam
     for side in 0..2 {
 
+        // take the available_modules and available_seams from
+        // the splits arrays (we won't use them after this)
         let side_available_modules = std::mem::take(&mut module_splits[side]);
         let side_available_seams = std::mem::take(&mut seam_splits[side]);
 
+        // if there were no seams on this side
         if side_available_seams.is_empty() {
 
+            // then there'd better be exactly one module
             debug_assert!(side_available_modules.len() == 1);
 
             let midx = side_available_modules[0];
@@ -1482,113 +1487,149 @@ fn subdivide_r(pt: &PenroseTiling,
             println!("{:}module {:}", 
                      indent, pt.label_for_htile_idx(module_info[midx].tidx));
 
-            children[side] = TreeChild::Module(midx);
+            children[side] = SeamChild::Module(midx);
 
-        } else {
+        } else { // there were seams on this side, keep recursing
 
+            // better be at least two modules
             debug_assert!(side_available_modules.len() > 1);
 
-            let child_sidx = subdivide_r(pt, seams, module_info,
+            let child_sidx = build_seam_tree_r(pt, seams, module_info,
                                          side_available_modules,
                                          side_available_seams,
                                          depth+1, sidx, 
-                                         tree_seam_info);
+                                         seam_tree);
             
-            children[side] = TreeChild::Seam(child_sidx);
+            children[side] = SeamChild::Seam(child_sidx);
 
         }
 
     }
-
-    tree_seam_info[sidx] = TreeSeamInfo { 
+    
+    // write seam tree node
+    seam_tree[sidx] = SeemTreeInfo { 
         depth: depth,
         parent_sidx: parent_sidx,
         children: children
     };
 
+    // return chosen seam index for parent call
     sidx
 
 
 }
 
-fn subdivide(pt: &PenroseTiling,
-             seams: &Vec<Seam>,
-             module_info: &Vec<ModuleInfo>) ->
-    Vec<TreeSeamInfo>
+//////////////////////////////////////////////////////////////////////
+// wrapper function around recursive function above
 
+fn build_seam_tree(pt: &PenroseTiling,
+                   seams: &Vec<Seam>,
+                   module_info: &Vec<ModuleInfo>) ->
+    Vec<SeemTreeInfo>
 {
 
     let available_modules = (0..module_info.len()).collect::<Vec<usize>>();
     let available_seams = (0..seams.len()).collect::<Vec<usize>>();
 
-    let mut tree_seam_info: Vec<TreeSeamInfo> = 
-        vec![TreeSeamInfo::default(); seams.len()];
+    let mut seam_tree: Vec<SeemTreeInfo> = 
+        vec![SeemTreeInfo::default(); seams.len()];
 
     println!("subdividing along seams:\n");
 
-    subdivide_r(pt, seams, module_info, 
-                available_modules, available_seams,
-                0, usize::MAX,
-                &mut tree_seam_info);
+    build_seam_tree_r(pt, seams, module_info, 
+                      available_modules, available_seams,
+                      0, usize::MAX,
+                      &mut seam_tree);
 
 
     println!("");
 
-    tree_seam_info
+    seam_tree
 
 }
 
-fn batch_seams(pt: &PenroseTiling,
-               seams: Vec<Seam>,
-               module_info: Vec<ModuleInfo>,
-               tree_seam_info: Vec<TreeSeamInfo>) ->
+//////////////////////////////////////////////////////////////////////
+// given a tree, make batches of seams by visiting them from deepest
+// to shallowest
+//
+// return seams to draw and text instructions for displaying
+
+fn batch_seams_from_tree(pt: &PenroseTiling,
+                         seams: Vec<Seam>,
+                         module_info: Vec<ModuleInfo>,
+                         seam_tree: Vec<SeemTreeInfo>) ->
     (Vec<SeamDrawInfo>, Vec<Vec<String>>) 
 {
 
+    // sort seams decreasing by depth, increasing by seam index if tied
     let mut sidx_by_depth = (0..seams.len()).collect::<Vec<usize>>();
     
-    sidx_by_depth.sort_by_key(|sidx| (usize::MAX - tree_seam_info[*sidx].depth,
-                                      *sidx));
+    sidx_by_depth.sort_by_key(|sidx| {
+        (usize::MAX - seam_tree[*sidx].depth, *sidx)
+    });
 
+    // now make batches of seams!
+    
     let mut seams_remaining = seams.len();
     let mut seam_is_sewn = vec![false; seams.len()];
 
-    let mut seams_reordered = vec![];
+    let mut seams_to_draw = vec![];
     let mut instructions = vec![];
 
+    // number that seam is labeled with
     let mut output_idx = vec![usize::MAX; seams.len()];
 
+    // until all seams sewn
     while seams_remaining > 0 {
 
-        let mut seam_busy = vec![false; seams.len()];
+        // build up a batch
         let mut batch = vec![];
 
+        // can't sew "busy" seams - i.e. ones whose children
+        // are being sewn in this batch
+        let mut seam_busy = vec![false; seams.len()];
+
         for &sidx in &sidx_by_depth {
-            if !seam_is_sewn[sidx] && !seam_busy[sidx] {
-                batch.push(sidx);
-                seam_is_sewn[sidx] = true;
-                seams_remaining -= 1;
-                let mut sidx = sidx;
-                while sidx != usize::MAX {
-                    seam_busy[sidx] = true;
-                    sidx = tree_seam_info[sidx].parent_sidx;
-                }
+
+            if seam_is_sewn[sidx] || seam_busy[sidx] {
+                continue;
             }
+
+            // add to batch, set sewn, decrement seams to go
+            batch.push(sidx);
+            seam_is_sewn[sidx] = true;
+            seams_remaining -= 1;
+
+            // mark self and parents as busy
+            let mut sidx = sidx;
+
+            while sidx != usize::MAX {
+                seam_busy[sidx] = true;
+                sidx = seam_tree[sidx].parent_sidx;
+            }
+
         }
-        
+
+        // sort by (x,y) position within a batch to locate on page easily
         batch.sort_by(|sidx_a, sidx_b| {
             seams[*sidx_b].key.partial_cmp(&seams[*sidx_a].key).unwrap()
         });
 
+        // now handle output
+
+        // instructions for this batch
         let mut batch_insructions = vec![];
 
+        // for each seam in batch
         for sidx in batch {
-
+            
             let seam = &seams[sidx];
 
-            output_idx[sidx] = seams_reordered.len();
+            // remember its output index (for labeling assemblies)
+            output_idx[sidx] = seams_to_draw.len();
 
-            seams_reordered.push(
+            // thing to draw
+            seams_to_draw.push(
                 SeamDrawInfo {
                     lidx: seam.lidx,
                     vidx0: seam.interval.vidx0,
@@ -1596,19 +1637,20 @@ fn batch_seams(pt: &PenroseTiling,
                 }
             );
 
+            // name children for "join XXX to XXX"
             let mut child_names = [ String::new(), String::new() ];
 
             for side in 0..2 {
 
-                child_names[side] = match tree_seam_info[sidx].children[side] {
+                child_names[side] = match seam_tree[sidx].children[side] {
                     
-                    TreeChild::Empty => { "???".to_string() },
+                    SeamChild::Empty => { "???".to_string() },
 
-                    TreeChild::Module(midx) => {
+                    SeamChild::Module(midx) => {
                         pt.label_for_htile_idx(module_info[midx].tidx)
                     },
 
-                    TreeChild::Seam(other_sidx) => {
+                    SeamChild::Seam(other_sidx) => {
                         format!("assembly{:}",
                                 output_idx[other_sidx]+1)
                     }
@@ -1617,36 +1659,38 @@ fn batch_seams(pt: &PenroseTiling,
 
             }
 
+            // make the instruction
             let instruction = format!("Sew seam {:} joining {:} and {:}", 
-                                      seams_reordered.len(),
+                                      seams_to_draw.len(),
                                       child_names[0], child_names[1]);
 
             batch_insructions.push(instruction);
 
         }
 
+        // output this batch of instructions
         instructions.push(batch_insructions);
 
     }
 
-    (seams_reordered, instructions)
+    (seams_to_draw, instructions)
     
 }
-               
 
+//////////////////////////////////////////////////////////////////////
+// "discover" seams by finding all of the Lines that border visible
+// top-level modules on two sides
 
-fn gather_seams(pt: &PenroseTiling,
-                child_leafs: &Vec<Vec<usize>>,
-                visible_top_level_htiles: &Vec<usize>,
-                vvec: &Vec<Point2d>, 
-                precis: f64) ->
-    (Vec<SeamDrawInfo>, Vec<Vec<String>>)
+fn discover_seams(pt: &PenroseTiling,
+                  vvec: &Vec<Point2d>, 
+                  precis: f64,
+                  module_info: &Vec<ModuleInfo>) ->
+    Vec<Seam>
 {
 
-    let mut line_sides: HashMap<usize, [LineSideInfo; 2]> = HashMap::new();
 
-    let module_info = get_module_info(pt, child_leafs, 
-                                      visible_top_level_htiles, vvec);
+    // Line index -> left/right LineInterval
+    let mut line_sides: HashMap<usize, [LineInterval; 2]> = HashMap::new();
 
     let mut verts_rect = Rect2d::empty();
     
@@ -1678,8 +1722,10 @@ fn gather_seams(pt: &PenroseTiling,
 
             let side_idx = is_right as usize;
 
-            line_sides.entry(lidx).or_default()[side_idx].insert(
-                u0, tri_vidx0, u1, tri_vidx1);
+            let item = line_sides.entry(lidx).or_default();
+
+            item[side_idx].expand(u0, tri_vidx0);
+            item[side_idx].expand(u1, tri_vidx1);
 
         }
         
@@ -1690,7 +1736,7 @@ fn gather_seams(pt: &PenroseTiling,
    
     for (lidx, sides) in line_sides.iter_mut() {
 
-        let interval = sides[0].interval.intersection(&sides[1].interval);
+        let interval = sides[0].intersection(&sides[1]);
 
         if interval.is_valid() {
 
@@ -1702,14 +1748,34 @@ fn gather_seams(pt: &PenroseTiling,
 
     seams.sort_by_key(|seam| seam.lidx);
 
-    let tree_seam_info = subdivide(pt, &seams, &module_info);
+    seams
 
-    batch_seams(pt, seams, module_info, tree_seam_info)
+}
+               
+//////////////////////////////////////////////////////////////////////
+// batch seams up for drawing and instructing
+
+fn batch_seams(pt: &PenroseTiling,
+               child_leafs: &Vec<Vec<usize>>,
+               visible_top_level_modules: &Vec<usize>,
+               vvec: &Vec<Point2d>, 
+               precis: f64) ->
+    (Vec<SeamDrawInfo>, Vec<Vec<String>>)
+{
+    
+    let module_info = get_module_info(pt, child_leafs, 
+                                      visible_top_level_modules, vvec);
+
+    let seams = discover_seams(pt, vvec, precis, &module_info);
+
+    let seam_tree = build_seam_tree(pt, &seams, &module_info);
+
+    batch_seams_from_tree(pt, seams, module_info, seam_tree)
 
 }
 
 //////////////////////////////////////////////////////////////////////
-
+// TODO: DOCUMENT EVERYTHING BELOW HERE!
 
 type TriFunc = fn() -> PenroseTiling;
 
@@ -2197,6 +2263,13 @@ impl QuiltSpec {
 }
 
 
+// module visibility 
+#[derive(Debug,PartialEq,Clone,Copy)]
+enum Visibility {
+    Invisible, // no child leaf modules overlap view rect
+    Partial,   // some child leaf modules overlap view rect
+    Full       // all child leaf modules overlap view rect
+}
 
 #[allow(dead_code)]
 struct Quilt {
@@ -2215,7 +2288,7 @@ struct Quilt {
     htile_visibility: Vec<Visibility>,
 
     visible_leaf_htiles: Vec<usize>,
-    visible_top_level_htiles: Vec<usize>,
+    visible_top_level_modules: Vec<usize>,
 
     seams: Vec<SeamDrawInfo>,
     instructions: Vec<Vec<String>>
@@ -2438,7 +2511,7 @@ impl Quilt {
 
         }
 
-        let mut visible_top_level_htiles = Vec::new();
+        let mut visible_top_level_modules = Vec::new();
 
         for (i, t) in pt.htiles.iter().enumerate() {
             
@@ -2453,18 +2526,18 @@ impl Quilt {
             };
 
             if me_overlaps && !parent_overlaps {
-                visible_top_level_htiles.push(i)
+                visible_top_level_modules.push(i)
             }
             
         }
 
         let precis = qs.scale * 2.0;
 
-        let (seams, instructions) = gather_seams(&pt, 
-                                                 &child_leafs,
-                                                 &visible_top_level_htiles, 
-                                                 &xformed_verts,
-                                                 precis);
+        let (seams, instructions) = batch_seams(&pt, 
+                                                &child_leafs,
+                                                &visible_top_level_modules, 
+                                                &xformed_verts,
+                                                precis);
 
 
         Ok(Quilt {
@@ -2482,7 +2555,7 @@ impl Quilt {
             htile_visibility: htile_visibility,
 
             visible_leaf_htiles: visible_leaf_htiles,
-            visible_top_level_htiles: visible_top_level_htiles,
+            visible_top_level_modules: visible_top_level_modules,
 
             seams: seams,
             instructions: instructions
@@ -3009,8 +3082,8 @@ fn draw_quilt(ctx: &cairo::Context,
 
                 let dir = d10 / len;
 
-                let s = format!("{:}", sidx+1);
-                //let s = format!("L{:}", seam.lidx);
+                //let s = format!("{:}", sidx+1);
+                let s = format!("L{:}", seam.lidx);
                 let text = s.as_str();
 
                 let extents = ctx.text_extents(text);
@@ -3640,6 +3713,7 @@ fn run() -> Result<()> {
 
     let mut counts: HashMap< (HalfTileType, TriangleSide, usize), usize > = HashMap::new();
 
+
     for (tri, visibility) in quilt.pt.htiles.iter().zip(quilt.htile_visibility.iter()) {
 
         if *visibility == Visibility::Full {
@@ -3653,6 +3727,7 @@ fn run() -> Result<()> {
         }
 
     }
+
 
     for level in 0..quilt.pt.generations.len() {
 
@@ -3687,7 +3762,7 @@ fn run() -> Result<()> {
 
     layout_page(&ctx, &portrait_rect, &drawables, spacing)?;
 
-    draw(&quilt.visible_top_level_htiles, &portrait_rect, PageSettings {
+    draw(&quilt.visible_top_level_modules, &portrait_rect, PageSettings {
         frame: CoordinateFrame::XformedCoords,
         draw_as_finished: false,
         two_color_palette: false,
