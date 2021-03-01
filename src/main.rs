@@ -190,15 +190,15 @@ impl Box2d {
         
     }
 
-    // does triangle (v0, v1, v2) overlap this box?
-    fn overlaps_tri(&self, v0: &Point2d, v1: &Point2d, v2: &Point2d) -> bool {
+    // does triangle (p0, p1, p2) overlap this box?
+    fn overlaps_tri(&self, p0: &Point2d, p1: &Point2d, p2: &Point2d) -> bool {
 
-        self.contains_point(v0) ||
-            self.contains_point(v1) ||
-            self.contains_point(v2) ||
-            self.intersects_segment(v0, v1) ||
-            self.intersects_segment(v1, v2) || 
-            self.intersects_segment(v2, v0)
+        self.contains_point(p0) ||
+            self.contains_point(p1) ||
+            self.contains_point(p2) ||
+            self.intersects_segment(p0, p1) ||
+            self.intersects_segment(p1, p2) || 
+            self.intersects_segment(p2, p0)
         
     }
 
@@ -207,7 +207,7 @@ impl Box2d {
 //////////////////////////////////////////////////////////////////////
 //
 // make a Transform2d that will translate and scale the given
-// verts_rect (input) to the given page_rect (output).
+// points_rect (input) to the given page_rect (output).
 //
 // always includes vertical flip because graphics coordinate system
 // is left-handed (y increases going down)
@@ -221,16 +221,16 @@ enum HFlip {
     No
 }
 
-fn get_page_transform(verts_rect: &Rect2d, 
+fn get_page_transform(contents_rect: &Rect2d, 
                       page_rect: &Rect2d, 
                       hflip: HFlip) -> (Transform2d, f64) {
 
-    let vdims = verts_rect.dims();
+    let cdims = contents_rect.dims();
     let pdims = page_rect.dims();
 
-    let scl = (pdims.component_div(&vdims)).min();
+    let scl = (pdims.component_div(&cdims)).min();
 
-    let vmid = verts_rect.center();
+    let vmid = contents_rect.center();
     let pmid = page_rect.center();
 
     let translate_page = Translation2d::new(pmid[0], pmid[1]);
@@ -245,9 +245,9 @@ fn get_page_transform(verts_rect: &Rect2d,
         )
     );
 
-    let translate_verts = Translation2d::new(-vmid[0], -vmid[1]);
+    let translate_points = Translation2d::new(-vmid[0], -vmid[1]);
 
-    let transform = translate_page * scale * translate_verts;
+    let transform = translate_page * scale * translate_points;
 
     (transform, scl)
     
@@ -283,15 +283,15 @@ fn intersect(l1: &Vec3d, l2: &Vec3d) -> Result<Point2d> {
 }
 
 //////////////////////////////////////////////////////////////////////
-// get the incenter of triangle (v0, v1, v2) and the inradius too
+// get the incenter of triangle (p0, p1, p2) and the inradius too
 
-fn tri_incenter_radius(v0: &Point2d, 
-              v1: &Point2d,
-              v2: &Point2d) -> Result<(Point2d, f64)> {
+fn tri_incenter_radius(p0: &Point2d, 
+                       p1: &Point2d,
+                       p2: &Point2d) -> Result<(Point2d, f64)> {
 
-    let l01 = line_from_points(v0, v1);
-    let l12 = line_from_points(v1, v2);
-    let l20 = line_from_points(v2, v0);
+    let l01 = line_from_points(p0, p1);
+    let l12 = line_from_points(p1, p2);
+    let l20 = line_from_points(p2, p0);
 
     let b1 = l01 - l12;
     let b2 = l12 - l20;
@@ -307,28 +307,28 @@ fn tri_incenter_radius(v0: &Point2d,
 // the given distance.
 
 #[derive(Debug,PartialEq)]
-#[allow(dead_code)] // 
+#[allow(dead_code)] // we only do snipped corners but nice to have option
 enum SnipCorners {
     Yes,
     No
 }
 
-fn offset_convex_poly(verts: &Vec<Point2d>, 
+fn offset_convex_poly(points: &Vec<Point2d>, 
                       dist: f64, 
                       snip: SnipCorners) -> Result<Vec<Point2d>> {
 
-    let n = verts.len();
+    let n = points.len();
 
     assert!(n > 2);
 
     let mut lines = Vec::new();
 
-    for (idx, v0) in verts.iter().enumerate() {
-        let v1 = &verts[(idx + 1) % n];
-        lines.push(line_from_points(v0, v1));
+    for (idx, p0) in points.iter().enumerate() {
+        let p1 = &points[(idx + 1) % n];
+        lines.push(line_from_points(p0, p1));
     }
 
-    let dp = lines[0].dot(&verts[2].to_homogeneous());
+    let dp = lines[0].dot(&points[2].to_homogeneous());
     let s = if dp < 0.0 { -1.0 } else { 1.0 };
 
     for line in &mut lines {
@@ -348,7 +348,7 @@ fn offset_convex_poly(verts: &Vec<Point2d>,
 
             let tangent = s * Vec2d::new(bisector.y, -bisector.x);
 
-            let v_orig = &verts[idx];
+            let v_orig = &points[idx];
             
             let mut lbisect = Vec3d::new(
                 tangent.x, tangent.y, 
@@ -356,11 +356,11 @@ fn offset_convex_poly(verts: &Vec<Point2d>,
 
             lbisect[2] += s*dist;
             
-            let v1 = intersect(l0, &lbisect)?;
-            let v2 = intersect(&lbisect, l1)?;
+            let p1 = intersect(l0, &lbisect)?;
+            let p2 = intersect(&lbisect, l1)?;
 
-            rval.push(v1);
-            rval.push(v2);
+            rval.push(p1);
+            rval.push(p2);
 
         } else {
 
@@ -376,37 +376,37 @@ fn offset_convex_poly(verts: &Vec<Point2d>,
 }
 
 //////////////////////////////////////////////////////////////////////
-// given a triangle (v0, v1, v2) return points (b0, b1, b2, b3)
+// given a triangle (p0, p1, p2) return points (b0, b1, b2, b3)
 // as shown here:
 //
-//                 _* v1 
+//                 _* p1 
 //            b3 _*  \ 
 //             _-  *  \
 //           _-  _- \  \
 //         _-  _- b1 \  \
 //       _-  _-       \  \
 //     _-  _-          \  \
-// v0 *---*-------------*--* v2
+// p0 *---*-------------*--* p2
 //       b0            b2
 //
-// dist is the distance from line (v0, v1) to line (b0, b1) and 
-// line (v1, v2) to line (b1, b2)
+// dist is the distance from line (p0, p1) to line (b0, b1) and 
+// line (p1, p2) to line (b1, b2)
 //
 // dilate is an extra amount to dilate the resulting triangle
 // (b0, b1, b2) to ensure drawing with no gaps
 
-fn tri_border(v0: &Point2d, 
-              v1: &Point2d,
-              v2: &Point2d, 
+fn tri_border(p0: &Point2d, 
+              p1: &Point2d,
+              p2: &Point2d, 
               dist: f64,
               dilate: f64) -> Result<(Point2d, Point2d, Point2d, Point2d)> {
 
 
-    let l01 = line_from_points(v0, v1);
-    let l12 = line_from_points(v1, v2);
-    let l20 = line_from_points(v2, v0);
+    let l01 = line_from_points(p0, p1);
+    let l12 = line_from_points(p1, p2);
+    let l20 = line_from_points(p2, p0);
 
-    let s = if l01.dot(&v2.to_homogeneous()) < 0.0 { -1.0 } else { 1.0 };
+    let s = if l01.dot(&p2.to_homogeneous()) < 0.0 { -1.0 } else { 1.0 };
 
     let odilate = Vec3d::new(0.0, 0.0, s*dilate);
     let odist = Vec3d::new(0.0, 0.0, -s*dist);
@@ -418,12 +418,12 @@ fn tri_border(v0: &Point2d,
     let k01 = l01 + odist;
     let k12 = l12 + odist;
 
-    let v0 = intersect(&k01, &l20)?;
-    let v1 = intersect(&k01, &k12)?;
-    let v2 = intersect(&k12, &l20)?;
+    let p0 = intersect(&k01, &l20)?;
+    let p1 = intersect(&k01, &k12)?;
+    let p2 = intersect(&k12, &l20)?;
     let v3 = intersect(&k12, &l01)?;
 
-    Ok((v0, v1, v2, v3))
+    Ok((p0, p1, p2, v3))
 
 }
 
@@ -490,7 +490,7 @@ fn tri_type_side_level_string(ttype: HalfTileType,
 #[derive(Debug, PartialEq, Clone)]
 struct HalfTile {
 
-    vidx:       [usize; 3],    // vertex indices within Vec<Point2d>
+    pidx:       [usize; 3],    // vertex indices within Vec<Point2d>
     lidx:       [usize; 3],    // line indices for [(0, 1), (1, 2), (2, 0)]
 
     ttype:      HalfTileType,  // Kite or Dart
@@ -503,7 +503,7 @@ struct HalfTile {
 
 impl HalfTile {
 
-    // get line index for line connecting vertices at vidx[a] and vidx[b]
+    // get line index for line connecting vertices at pidx[a] and pidx[b]
     fn get_lidx(&self, a: usize, b: usize) -> usize {
 
         debug_assert!(a < 3);
@@ -523,20 +523,20 @@ impl HalfTile {
 
     }
 
-    // get verts from external vec using my indices 
-    fn get_verts<'a, 'b>(&'a self, verts: &'b Vec<Point2d>) ->
+    // get points from external vec using my indices 
+    fn get_points<'a, 'b>(&'a self, points: &'b Vec<Point2d>) ->
         (&'b Point2d, &'b Point2d, &'b Point2d) 
     {
-        (&verts[self.vidx[0]],
-         &verts[self.vidx[1]],
-         &verts[self.vidx[2]])
+        (&points[self.pidx[0]],
+         &points[self.pidx[1]],
+         &points[self.pidx[2]])
     }
 
     // used for debugging
-    fn has_vertex(&self, vidx: usize) -> bool {
-        self.vidx[0] == vidx ||
-            self.vidx[1] == vidx ||
-            self.vidx[2] == vidx
+    fn has_vertex(&self, pidx: usize) -> bool {
+        self.pidx[0] == pidx ||
+            self.pidx[1] == pidx ||
+            self.pidx[2] == pidx
     }
 
     // num_generations - 1 -> 0, 0 -> num_generations - 1
@@ -559,24 +559,24 @@ impl HalfTile {
 #[derive(Debug)]
 struct Line {
     parent:  Option<usize>,        // parent half-tile index
-    vidx0:   usize,                // starting vertex index
-    vidx1:   usize,                // ending vertex index
+    pidx0:   usize,                // starting vertex index
+    pidx1:   usize,                // ending vertex index
     vlookup: HashMap<usize, f64>,  // map from vertex index to dist along line
 }
 
 impl Line {
 
-    fn new(parent: Option<usize>, vidx0: usize, vidx1: usize) -> Self {
+    fn new(parent: Option<usize>, pidx0: usize, pidx1: usize) -> Self {
 
         let mut vlookup = HashMap::new();
 
-        vlookup.insert(vidx0, 0.0);
-        vlookup.insert(vidx1, 1.0);
+        vlookup.insert(pidx0, 0.0);
+        vlookup.insert(pidx1, 1.0);
 
         Line {
             parent: parent,
-            vidx0: vidx0,
-            vidx1: vidx1,
+            pidx0: pidx0,
+            pidx1: pidx1,
             vlookup: vlookup,
         }
 
@@ -585,14 +585,14 @@ impl Line {
 }
 
 // index edges by indices of two vertices
-type VIdxPair = (usize, usize); 
+type PidxPair = (usize, usize); 
 
 // split line to subdivide half tiles
 #[derive(Debug)]
 struct HalfTileSplit {
     lidx:  usize, // line index
-    vidx0: usize, // first vertex
-    vidx1: usize, // second vertex
+    pidx0: usize, // first vertex
+    pidx1: usize, // second vertex
     tidx0: usize, // left half-tile index
     tidx1: usize, // right half-tile index
 }
@@ -600,12 +600,12 @@ struct HalfTileSplit {
 impl HalfTileSplit {
 
     fn new(lidx: usize, 
-           vidx0: usize, vidx1: usize, 
+           pidx0: usize, pidx1: usize, 
            tidx0: usize, tidx1: usize) -> Self {
 
         HalfTileSplit { 
             lidx: lidx,
-            vidx0: vidx0, vidx1: vidx1, 
+            pidx0: pidx0, pidx1: pidx1, 
             tidx0: tidx0, tidx1: tidx1 
         }
 
@@ -620,8 +620,8 @@ impl HalfTileSplit {
 #[derive(Debug)]
 struct PenroseTiling {
     
-    verts:    Vec<Point2d>,             // all vertices
-    esplits:  HashMap<VIdxPair, usize>, // map of parent verts -> child vertex
+    points:    Vec<Point2d>,             // all vertices
+    esplits:  HashMap<PidxPair, usize>, // map of parent points -> child vertex
     lines:    Vec<Line>,                // all lines
     htiles:   Vec<HalfTile>,            // all half-tiles
 
@@ -644,7 +644,7 @@ impl PenroseTiling {
                      tside: TriangleSide) -> Self {
 
         let tri = HalfTile {
-            vidx: [0, 1, 2],
+            pidx: [0, 1, 2],
             lidx: [0, 1, 2],
             ttype: ttype,
             tside: tside,
@@ -655,15 +655,15 @@ impl PenroseTiling {
 
         let mut lines = vec![];
 
-        for &(vidx0, vidx1) in &[(0, 1), (1, 2), (2, 0)] {
+        for &(pidx0, pidx1) in &[(0, 1), (1, 2), (2, 0)] {
 
-            lines.push(Line::new(None, vidx0, vidx1));
+            lines.push(Line::new(None, pidx0, pidx1));
 
         }
 
         PenroseTiling {
             
-            verts: vec![p0, p1, p2],
+            points: vec![p0, p1, p2],
             lines: lines,
             esplits: HashMap::new(),
             htiles: vec![tri],
@@ -716,14 +716,14 @@ impl PenroseTiling {
 
         let tri = &self.htiles[tidx];
 
-        let vidx0 = tri.vidx[i0];
-        let vidx1 = tri.vidx[i1];
+        let pidx0 = tri.pidx[i0];
+        let pidx1 = tri.pidx[i1];
 
         let lidx = tri.get_lidx(i0, i1);
 
         debug_assert!(lidx < self.lines.len());
 
-        let e = self.esplits.entry( (vidx0, vidx1) );
+        let e = self.esplits.entry( (pidx0, pidx1) );
 
         match e {
 
@@ -733,29 +733,29 @@ impl PenroseTiling {
 
             Vacant(v) => {
 
-                let vidx2 = self.verts.len();
+                let pidx2 = self.points.len();
 
-                let p0 = self.verts[vidx0];
-                let p1 = self.verts[vidx1];
+                let p0 = self.points[pidx0];
+                let p1 = self.points[pidx1];
 
                 let pnew = p0 + INVPHI*(p1 - p0);
-                self.verts.push(pnew);
+                self.points.push(pnew);
 
                 let line = &mut self.lines[lidx];
 
-                debug_assert!(line.vlookup.contains_key(&vidx0));
-                debug_assert!(line.vlookup.contains_key(&vidx1));
+                debug_assert!(line.vlookup.contains_key(&pidx0));
+                debug_assert!(line.vlookup.contains_key(&pidx1));
 
-                let u0 = line.vlookup.get(&vidx0).unwrap();
-                let u1 = line.vlookup.get(&vidx1).unwrap();
+                let u0 = line.vlookup.get(&pidx0).unwrap();
+                let u1 = line.vlookup.get(&pidx1).unwrap();
                 
                 let unew = u0 + INVPHI*(u1 - u0);
 
-                line.vlookup.insert(vidx2, unew);
+                line.vlookup.insert(pidx2, unew);
 
-                v.insert(vidx2);
+                v.insert(pidx2);
 
-                vidx2
+                pidx2
 
             }
 
@@ -767,11 +767,11 @@ impl PenroseTiling {
     // input: vertex indices
     // output: line index
 
-    fn add_line(&mut self, parent: usize, vidx0: usize, vidx1: usize) -> usize {
+    fn add_line(&mut self, parent: usize, pidx0: usize, pidx1: usize) -> usize {
 
         let lidx = self.lines.len();
 
-        self.lines.push(Line::new(Some(parent), vidx0, vidx1));
+        self.lines.push(Line::new(Some(parent), pidx0, pidx1));
         
         lidx
 
@@ -780,7 +780,7 @@ impl PenroseTiling {
     // add a half-tile made from new vertices & lines
 
     fn add_half_tile(&mut self,
-                     vidx: [usize; 3],
+                     pidx: [usize; 3],
                      lidx: [usize; 3],
                      ttype: HalfTileType,
                      tside: TriangleSide,
@@ -794,13 +794,13 @@ impl PenroseTiling {
 
             let i1 = (i0 + 1) % 3;
             
-            let vidx0 = vidx[i0];
-            let vidx1 = vidx[i1];
+            let pidx0 = pidx[i0];
+            let pidx1 = pidx[i1];
 
             let lidx = lidx[i0];
 
-            debug_assert!(self.lines[lidx].vlookup.contains_key(&vidx0));
-            debug_assert!(self.lines[lidx].vlookup.contains_key(&vidx1));
+            debug_assert!(self.lines[lidx].vlookup.contains_key(&pidx0));
+            debug_assert!(self.lines[lidx].vlookup.contains_key(&pidx1));
 
 
         }
@@ -808,7 +808,7 @@ impl PenroseTiling {
         self.htiles[tidx_parent].children.push(tidx_new);
         
         self.htiles.push( HalfTile {
-            vidx: vidx,
+            pidx: pidx,
             lidx: lidx,
             ttype: ttype,
             tside: tside,
@@ -826,31 +826,31 @@ impl PenroseTiling {
     fn split_half_tile(&mut self,
                        parent: usize,
                        lidx: usize,
-                       vidx0: usize, vidx1: usize,
+                       pidx0: usize, pidx1: usize,
                        tidx0: usize, tidx1: usize) {
 
-        let (vidx0, vidx1) = if vidx0 <= vidx1 {
-            (vidx0, vidx1)
+        let (pidx0, pidx1) = if pidx0 <= pidx1 {
+            (pidx0, pidx1)
         } else {
-            (vidx1, vidx0)
+            (pidx1, pidx0)
         };
 
-        debug_assert!(vidx0 < vidx1);
+        debug_assert!(pidx0 < pidx1);
         debug_assert!(tidx0 < tidx1);
 
         debug_assert!(self.htiles[tidx0].parent == Some(parent));
         debug_assert!(self.htiles[tidx1].parent == Some(parent));
 
-        debug_assert!(self.htiles[tidx0].has_vertex(vidx0));
-        debug_assert!(self.htiles[tidx0].has_vertex(vidx1));
-        debug_assert!(self.htiles[tidx1].has_vertex(vidx0));
-        debug_assert!(self.htiles[tidx1].has_vertex(vidx1));
+        debug_assert!(self.htiles[tidx0].has_vertex(pidx0));
+        debug_assert!(self.htiles[tidx0].has_vertex(pidx1));
+        debug_assert!(self.htiles[tidx1].has_vertex(pidx0));
+        debug_assert!(self.htiles[tidx1].has_vertex(pidx1));
 
-        debug_assert!(self.lines[lidx].vlookup.contains_key(&vidx0));
-        debug_assert!(self.lines[lidx].vlookup.contains_key(&vidx1));
+        debug_assert!(self.lines[lidx].vlookup.contains_key(&pidx0));
+        debug_assert!(self.lines[lidx].vlookup.contains_key(&pidx1));
 
         self.tsplits.entry(parent).or_insert(vec![]).push(
-            HalfTileSplit::new(lidx, vidx0, vidx1, tidx0, tidx1) );
+            HalfTileSplit::new(lidx, pidx0, pidx1, tidx0, tidx1) );
 
     }
 
@@ -894,8 +894,8 @@ impl PenroseTiling {
 
         let tidx_first_gfinal = self.first_tile_in_last_gen();
 
-        //println!("at start of subdivide got {:} verts, {:} htiles",
-        //self.verts.len(), self.htiles.len());
+        //println!("at start of subdivide got {:} points, {:} htiles",
+        //self.points.len(), self.htiles.len());
 
         let last_htiles = self.htiles[tidx_first_gfinal..].to_vec();
         
@@ -905,9 +905,9 @@ impl PenroseTiling {
 
             let tidx = tidx_offset + tidx_first_gfinal;
 
-            let vidx0 = tri.vidx[0];
-            let vidx1 = tri.vidx[1];
-            let vidx2 = tri.vidx[2];
+            let pidx0 = tri.pidx[0];
+            let pidx1 = tri.pidx[1];
+            let pidx2 = tri.pidx[2];
 
             let lidx0 = tri.lidx[0];
             let lidx1 = tri.lidx[1];
@@ -920,49 +920,49 @@ impl PenroseTiling {
 
                 HalfTileType::Kite => {
 
-                    let vidx3 = self.split_edge(tidx, 0, 2);
-                    let vidx4 = self.split_edge(tidx, 1, 0);
+                    let pidx3 = self.split_edge(tidx, 0, 2);
+                    let pidx4 = self.split_edge(tidx, 1, 0);
 
-                    let lidx3 = self.add_line(tidx, vidx1, vidx3);
-                    let lidx4 = self.add_line(tidx, vidx3, vidx4);
+                    let lidx3 = self.add_line(tidx, pidx1, pidx3);
+                    let lidx4 = self.add_line(tidx, pidx3, pidx4);
 
-                    let a = self.add_half_tile([vidx0, vidx3, vidx4],
+                    let a = self.add_half_tile([pidx0, pidx3, pidx4],
                                                [lidx2, lidx4, lidx0],
                                                HalfTileType::Dart, flip,
                                                tidx);
 
-                    let b = self.add_half_tile([vidx1, vidx4, vidx3],
+                    let b = self.add_half_tile([pidx1, pidx4, pidx3],
                                                [lidx0, lidx4, lidx3],
                                                HalfTileType::Kite, flip,
                                                tidx);
 
-                    let c = self.add_half_tile([vidx1, vidx2, vidx3],
+                    let c = self.add_half_tile([pidx1, pidx2, pidx3],
                                                [lidx1, lidx2, lidx3],
                                                HalfTileType::Kite, same,
                                                tidx);
 
-                    self.split_half_tile(tidx, lidx3, vidx1, vidx3, b, c);
-                    self.split_half_tile(tidx, lidx4, vidx3, vidx4, a, b);
+                    self.split_half_tile(tidx, lidx3, pidx1, pidx3, b, c);
+                    self.split_half_tile(tidx, lidx4, pidx3, pidx4, a, b);
 
                 }
 
                 HalfTileType::Dart => {
 
-                    let vidx3 = self.split_edge(tidx, 0, 1);
+                    let pidx3 = self.split_edge(tidx, 0, 1);
 
-                    let lidx3 = self.add_line(tidx, vidx2, vidx3);
+                    let lidx3 = self.add_line(tidx, pidx2, pidx3);
 
-                    let a = self.add_half_tile([vidx0, vidx3, vidx2], 
+                    let a = self.add_half_tile([pidx0, pidx3, pidx2], 
                                                [lidx0, lidx3, lidx2],
                                                HalfTileType::Kite, same,
                                                tidx);
                     
-                    let b = self.add_half_tile([vidx1, vidx2, vidx3],
+                    let b = self.add_half_tile([pidx1, pidx2, pidx3],
                                                [lidx1, lidx3, lidx0],
                                                HalfTileType::Dart, same,
                                                tidx);
 
-                    self.split_half_tile(tidx, lidx3, vidx2, vidx3, a, b);
+                    self.split_half_tile(tidx, lidx3, pidx2, pidx3, a, b);
                     
                 }
 
@@ -1007,7 +1007,7 @@ impl PenroseTiling {
             HalfTileType::Dart => PenroseTiling::half_dart()
         };
         
-        for v in &mut pt.verts {
+        for v in &mut pt.points {
             if tside != pt.htiles[0].tside {
                 v.y = -v.y;
             }
@@ -1035,8 +1035,8 @@ impl PenroseTiling {
 struct LineInterval {
     u0: f64,
     u1: f64,
-    vidx0: usize,
-    vidx1: usize
+    pidx0: usize,
+    pidx1: usize
 }
 
 impl LineInterval {
@@ -1044,8 +1044,8 @@ impl LineInterval {
     fn is_valid(&self) -> bool {
         
         self.u1 > self.u0 && 
-            self.vidx0 != usize::MAX && 
-            self.vidx1 != usize::MAX
+            self.pidx0 != usize::MAX && 
+            self.pidx1 != usize::MAX
         
     }
 
@@ -1053,21 +1053,21 @@ impl LineInterval {
         LineInterval {
             u0: 1.0,
             u1: 0.0,
-            vidx0: usize::MAX,
-            vidx1: usize::MAX
+            pidx0: usize::MAX,
+            pidx1: usize::MAX
         }
     }
 
-    fn expand(&mut self, u: f64, vidx: usize) {
+    fn expand(&mut self, u: f64, pidx: usize) {
 
         if u < self.u0 {
             self.u0 = u;
-            self.vidx0 = vidx;
+            self.pidx0 = pidx;
         }
 
         if u > self.u1 {
             self.u1 = u;
-            self.vidx1 = vidx;
+            self.pidx1 = pidx;
         }
 
     }
@@ -1084,19 +1084,19 @@ impl LineInterval {
 
         } else {
 
-            let (u0, vidx0) = if self.u0 > other.u0 {
-                (self.u0, self.vidx0)
+            let (u0, pidx0) = if self.u0 > other.u0 {
+                (self.u0, self.pidx0)
             } else {
-                (other.u0, other.vidx0)
+                (other.u0, other.pidx0)
             };
 
-            let (u1, vidx1) = if self.u1 < other.u1 {
-                (self.u1, self.vidx1)
+            let (u1, pidx1) = if self.u1 < other.u1 {
+                (self.u1, self.pidx1)
             } else {
-                (other.u1, other.vidx1)
+                (other.u1, other.pidx1)
             };
 
-            LineInterval { u0: u0, vidx0: vidx0, u1: u1, vidx1: vidx1 }
+            LineInterval { u0: u0, pidx0: pidx0, u1: u1, pidx1: pidx1 }
 
         }
             
@@ -1159,10 +1159,10 @@ impl Seam {
 
         }
 
-        let v0 = &vvec[interval.vidx0];
-        let v1 = &vvec[interval.vidx1];
+        let p0 = &vvec[interval.pidx0];
+        let p1 = &vvec[interval.pidx1];
 
-        let v = v0 + 0.5*(v1 - v0);
+        let v = p0 + 0.5*(p1 - p0);
 
         let q = (v - pmid) / precis;
 
@@ -1173,8 +1173,8 @@ impl Seam {
             lidx: lidx,
             interval: interval,
             tidx: line.parent.unwrap(),
-            line_coeffs: line_from_points(v0, v1),
-            centroid: Point2d::from(0.5 * (v0.coords + v1.coords)).to_homogeneous(),
+            line_coeffs: line_from_points(p0, p1),
+            centroid: Point2d::from(0.5 * (p0.coords + p1.coords)).to_homogeneous(),
             key: key,
             length: length - 1,
         }
@@ -1187,15 +1187,15 @@ impl Seam {
 struct ModuleInfo {
     tidx: usize,
     centroid: Vec3d,
-    edge_list: Vec<VIdxPair>
+    edge_list: Vec<PidxPair>
 }
 
 // just the information we need to draw a seam
 #[derive(Debug)]
 struct SeamDrawInfo {
     lidx: usize,
-    vidx0: usize,
-    vidx1: usize,
+    pidx0: usize,
+    pidx1: usize,
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -1208,7 +1208,7 @@ fn get_external_vertices(module_info: &Vec<ModuleInfo>,
 {
 
 
-    let mut edge_map: HashMap<VIdxPair, usize> = HashMap::new();
+    let mut edge_map: HashMap<PidxPair, usize> = HashMap::new();
 
     for &midx in available_modules {
         for &key in &module_info[midx].edge_list {
@@ -1218,11 +1218,11 @@ fn get_external_vertices(module_info: &Vec<ModuleInfo>,
 
     let mut vset = HashSet::new();
 
-    for ((vidx0, vidx1), cnt) in edge_map {
+    for ((pidx0, pidx1), cnt) in edge_map {
         debug_assert!(cnt == 1 || cnt == 2);
         if cnt == 1 {
-            vset.insert(vidx0);
-            vset.insert(vidx1);
+            vset.insert(pidx0);
+            vset.insert(pidx1);
         }
     }
 
@@ -1249,11 +1249,11 @@ fn get_module_info(pt: &PenroseTiling,
 
         let htile = &pt.htiles[tidx];
 
-        let (v0, v1, v2) = htile.get_verts(&vvec);
+        let (p0, p1, p2) = htile.get_points(&vvec);
 
-        let centroid = Point2d::from((v0.coords + v1.coords + v2.coords) / 3.0);
+        let centroid = Point2d::from((p0.coords + p1.coords + p2.coords) / 3.0);
 
-        let mut edge_map: HashMap<VIdxPair, usize> = HashMap::new();
+        let mut edge_map: HashMap<PidxPair, usize> = HashMap::new();
 
         for &cidx in &child_leafs[tidx] {
 
@@ -1261,21 +1261,21 @@ fn get_module_info(pt: &PenroseTiling,
 
             for i0 in 0..3 {
                 let i1 = (i0 + 1) % 3;
-                let vidx0 = child_htile.vidx[i0];
-                let vidx1 = child_htile.vidx[i1];
-                let (vidx0, vidx1) = if vidx0 < vidx1 {
-                    (vidx0, vidx1)
+                let pidx0 = child_htile.pidx[i0];
+                let pidx1 = child_htile.pidx[i1];
+                let (pidx0, pidx1) = if pidx0 < pidx1 {
+                    (pidx0, pidx1)
                 } else {
-                    (vidx1, vidx0)
+                    (pidx1, pidx0)
                 };
-                debug_assert!(vidx0 < vidx1);
-                let key = (vidx0, vidx1);
+                debug_assert!(pidx0 < pidx1);
+                let key = (pidx0, pidx1);
                 *edge_map.entry(key).or_insert(0) += 1;
             }
 
         }
 
-        let mut edge_list: Vec<VIdxPair> = vec![];
+        let mut edge_list: Vec<PidxPair> = vec![];
 
         for (key, cnt) in edge_map {
             debug_assert!(cnt == 1 || cnt == 2);
@@ -1310,7 +1310,7 @@ fn get_module_info(pt: &PenroseTiling,
 
 fn greedy_seam_search(seams: &Vec<Seam>,
                       lines: &Vec<Line>,
-                      external_verts: &Vec<usize>,
+                      external_points: &Vec<usize>,
                       available_seams: &Vec<usize>) ->
     (usize, [Vec<usize>; 2])
 
@@ -1333,8 +1333,8 @@ fn greedy_seam_search(seams: &Vec<Seam>,
 
         let mut num_external = 0;
         
-        for vidx in external_verts {
-            if let Some(&u) = line.vlookup.get(vidx) {
+        for pidx in external_points {
+            if let Some(&u) = line.vlookup.get(pidx) {
                 if u >= interval.u0 && u <= interval.u1 {
                     num_external += 1;
                 }
@@ -1427,7 +1427,7 @@ fn build_seam_tree_r(pt: &PenroseTiling,
     debug_assert!(available_modules.len() >= 2);
 
     // get external vertices
-    let external_verts = get_external_vertices(
+    let external_points = get_external_vertices(
         module_info, &available_modules);
 
     // greedy search for best splitting seam
@@ -1435,7 +1435,7 @@ fn build_seam_tree_r(pt: &PenroseTiling,
     // (mutable because we trash it on recursive call)
     let (sidx, mut seam_splits) = greedy_seam_search(
         seams, &pt.lines, 
-        &external_verts, &available_seams);
+        &external_points, &available_seams);
 
     // pretty-print tree as we build it
     let indent = "  ".repeat(depth);
@@ -1632,8 +1632,8 @@ fn batch_seams_from_tree(pt: &PenroseTiling,
             seams_to_draw.push(
                 SeamDrawInfo {
                     lidx: seam.lidx,
-                    vidx0: seam.interval.vidx0,
-                    vidx1: seam.interval.vidx1
+                    pidx0: seam.interval.pidx0,
+                    pidx1: seam.interval.pidx1
                 }
             );
 
@@ -1692,7 +1692,7 @@ fn discover_seams(pt: &PenroseTiling,
     // Line index -> left/right LineInterval
     let mut line_sides: HashMap<usize, [LineInterval; 2]> = HashMap::new();
 
-    let mut verts_rect = Rect2d::empty();
+    let mut contents_rect = Rect2d::empty();
     
     for minfo in module_info.iter() {
 
@@ -1700,32 +1700,32 @@ fn discover_seams(pt: &PenroseTiling,
 
         for i0 in 0..3 {
 
-            let tri_vidx0 = htile.vidx[i0];
-            let tri_vidx1 = htile.vidx[(i0 + 1) % 3];
+            let tri_pidx0 = htile.pidx[i0];
+            let tri_pidx1 = htile.pidx[(i0 + 1) % 3];
 
             let lidx = htile.lidx[i0];
             let line = &pt.lines[lidx];
 
-            verts_rect.expand(&vvec[tri_vidx0]);
+            contents_rect.expand(&vvec[tri_pidx0]);
 
-            let line_coeffs = line_from_points(&vvec[line.vidx0], 
-                                               &vvec[line.vidx1]);
+            let line_coeffs = line_from_points(&vvec[line.pidx0], 
+                                               &vvec[line.pidx1]);
 
             let is_right = line_coeffs.dot(&minfo.centroid) > 0.0;
 
-            debug_assert!(line.vlookup.contains_key(&tri_vidx0));
-            debug_assert!(line.vlookup.contains_key(&tri_vidx1));
-            debug_assert!(!line.vlookup.contains_key(&htile.vidx[(i0 + 2) % 3]));
+            debug_assert!(line.vlookup.contains_key(&tri_pidx0));
+            debug_assert!(line.vlookup.contains_key(&tri_pidx1));
+            debug_assert!(!line.vlookup.contains_key(&htile.pidx[(i0 + 2) % 3]));
 
-            let u0 = *line.vlookup.get(&tri_vidx0).unwrap();
-            let u1 = *line.vlookup.get(&tri_vidx1).unwrap();
+            let u0 = *line.vlookup.get(&tri_pidx0).unwrap();
+            let u1 = *line.vlookup.get(&tri_pidx1).unwrap();
 
             let side_idx = is_right as usize;
 
             let item = line_sides.entry(lidx).or_default();
 
-            item[side_idx].expand(u0, tri_vidx0);
-            item[side_idx].expand(u1, tri_vidx1);
+            item[side_idx].expand(u0, tri_pidx0);
+            item[side_idx].expand(u1, tri_pidx1);
 
         }
         
@@ -1740,7 +1740,7 @@ fn discover_seams(pt: &PenroseTiling,
 
         if interval.is_valid() {
 
-            seams.push(Seam::new(pt, vvec, &verts_rect.p1, precis, *lidx, interval));
+            seams.push(Seam::new(pt, vvec, &contents_rect.p1, precis, *lidx, interval));
 
         }
 
@@ -1775,22 +1775,13 @@ fn batch_seams(pt: &PenroseTiling,
 }
 
 //////////////////////////////////////////////////////////////////////
-// TODO: DOCUMENT EVERYTHING BELOW HERE!
+// below here is a bunch of stuff to parse pattern files which is
+// probably WAY more overengineered than even the rest of the program,
+// but might contain some fun curiosities?
 
-type TriFunc = fn() -> PenroseTiling;
+// algebraic data types for quilt pattern files
 
-const VALID_SOURCES: phf::Map<&'static str, TriFunc> = phf_map! {
-    "half_kite" => PenroseTiling::half_kite,
-    "half_dart" => PenroseTiling::half_dart,
-};
-
-static AXIS_LOOKUP: phf::Map<&'static str, Axis> = phf_map! {
-    "x" => Axis::PosX,
-    "-x" => Axis::NegX,
-    "y" => Axis::PosY,
-    "-y" => Axis::NegY
-};
-
+// center location of pattern 
 #[derive(Debug,PartialEq)]
 enum CenterType {
     Unset,
@@ -1799,6 +1790,7 @@ enum CenterType {
     Point(Point2d)
 }
 
+// for determining axis rotations
 #[derive(Debug,PartialEq,Eq,Hash,Clone,Copy)]
 enum Axis {
     PosX,
@@ -1807,6 +1799,7 @@ enum Axis {
     NegY
 }
 
+// for specifying pattern rotations
 #[derive(Debug,PartialEq)]
 enum AngleType {
     Unset, 
@@ -1814,48 +1807,66 @@ enum AngleType {
     VDiff(Axis, usize, usize)
 }
 
+// for specifying rectangle dimensions
 #[derive(Debug,PartialEq,Eq,Hash,Clone,Copy)] 
-#[allow(dead_code)]
-enum DimType {
-    Raw,
-    Finished,
-    Border,
-    Binding,
+enum RectDimType {
+    Finished, // smallest dimension - what will be visible
+    Raw,      // trim finished piecework to this dimension
+    Border,   // add a border beyond finished dim
+    Binding,  // add a binding after border
 }
 
-#[derive(Debug,PartialEq,Clone,Copy)]
-enum CoordinateFrame {
-    OrigCoords,
-    XformedCoords
-}
-
+// for specifying quilt rectangle in the design
 #[derive(Debug,PartialEq)]
 enum RectType {
     Unset, 
     Fit,
-    Dims { dtype: DimType, width: f64, height: f64 },
-    Verts { dtype: DimType, vidx: Vec<usize> }
-}
- 
-#[derive(Debug)]
-struct QuiltSpec {
-    source: Option<(String, TriFunc)>,
-    depth: usize,
-    center: CenterType,
-    angle: AngleType,
-    scale: f64,
-    rect_dims: RectType,
-    line_inset: f64,
-    border_allowance: f64,
-    nudge: Option<Vec2d>,
-    border_width: f64,
-    binding_width: f64,
+    Dims { dtype: RectDimType, width: f64, height: f64 },
+    Points { dtype: RectDimType, pidx: Vec<usize> }
 }
 
+// 0-input function generating a Penrose tiling
+type TriFunc = fn() -> PenroseTiling;
+
+// an overall quilt specification
+#[derive(Debug)]
+struct QuiltSpec {
+    // right now source is only half-kite or half-dart
+    source: Option<(String, TriFunc)>, 
+    depth: usize,          // subdivision depth for source
+    center: CenterType,    // center location in design frame
+    angle: AngleType,      // angle of quilt relative to design frame
+    scale: f64,            // scale of short edge in output units
+    rect_dims: RectType,   // dimensions of rectangle in output units
+    line_inset: f64,       // dimensions of half-tile borders in output units
+    border_allowance: f64, // difference between Raw and Finished edges, in output units
+    nudge: Option<Vec2d>,  // extra output-frame offset to apply to center
+    border_width: f64,     // dimension of quilt border in output units
+    binding_width: f64     // dimension of quilt binding in output units
+}
+
+// define a lookup table matching strings to functions generating
+// penrosetilings
+const VALID_SOURCES: phf::Map<&'static str, TriFunc> = phf_map! {
+    "half_kite" => PenroseTiling::half_kite,
+    "half_dart" => PenroseTiling::half_dart,
+};
+
+// define a lookup table matching axis strings to enumeration
+static AXIS_LOOKUP: phf::Map<&'static str, Axis> = phf_map! {
+    "x" => Axis::PosX,
+    "-x" => Axis::NegX,
+    "y" => Axis::PosY,
+    "-y" => Axis::NegY
+};
+ 
 //////////////////////////////////////////////////////////////////////
+// overengineered macro for parsing pattern files
 
 macro_rules! parse_tokens {
 
+    // finalizer - no more input to match, just error if remaining
+    // input or return collected outputs
     ($it:ident { } -> { $($tuple:ident,)* } ) => (
         match $it.next() {
             Some(value) => Err(format!("found extra token(s) starting with \"{:}\"", value)),
@@ -1950,6 +1961,10 @@ macro_rules! parse_tokens {
     )
 
 }
+
+//////////////////////////////////////////////////////////////////////
+// macros for inspecting/validating individual fields of QuiltSpec 
+
 macro_rules! copy_field {
 
     ($dst:ident, $src:ident, $field:ident, $null:expr) => (
@@ -1991,6 +2006,7 @@ fn parse_indices(tokens: &[&str]) -> Result<Vec<usize>> {
 }
 
 //////////////////////////////////////////////////////////////////////
+// implementation for QuiltSpec - basically deal with parsing
 
 impl QuiltSpec {
 
@@ -2058,11 +2074,11 @@ impl QuiltSpec {
 
             }
 
-            "center_verts" => { 
+            "center_points" => { 
 
-                let verts = parse_indices(rest)?;
+                let points = parse_indices(rest)?;
 
-                update.center = CenterType::VertIndexArray(verts);
+                update.center = CenterType::VertIndexArray(points);
 
             },
 
@@ -2080,14 +2096,14 @@ impl QuiltSpec {
 
             "angle_vdiff" => {
 
-                let (axis, vidx0, vidx1) = parse_tokens!(rest, { 
+                let (axis, pidx0, pidx1) = parse_tokens!(rest, { 
                     axis from AXIS_LOOKUP,
-                    vidx0: usize,
-                    vidx1: usize
+                    pidx0: usize,
+                    pidx1: usize
                 })?;
 
                 let (_, axis) = axis;
-                update.angle = AngleType::VDiff(axis, vidx0, vidx1);
+                update.angle = AngleType::VDiff(axis, pidx0, pidx1);
                 
             }
 
@@ -2108,9 +2124,9 @@ impl QuiltSpec {
                 let (w, h) = parse_tokens!(rest, { width: f64, height: f64 })?;
 
                 let dtype = if keyword.starts_with("raw") {
-                    DimType::Raw
+                    RectDimType::Raw
                 } else {
-                    DimType::Finished
+                    RectDimType::Finished
                 };
 
                 update.rect_dims = RectType::Dims{dtype: dtype,
@@ -2119,18 +2135,18 @@ impl QuiltSpec {
 
             },
 
-            "finished_rect_verts" | "raw_rect_verts" => {
+            "finished_rect_points" | "raw_rect_points" => {
 
-                let verts = parse_indices(rest)?;
+                let points = parse_indices(rest)?;
 
                 let dtype = if keyword.starts_with("raw") {
-                    DimType::Raw
+                    RectDimType::Raw
                 } else {
-                    DimType::Finished
+                    RectDimType::Finished
                 };
 
-                update.rect_dims = RectType::Verts{dtype: dtype,
-                                                   vidx: verts};
+                update.rect_dims = RectType::Points{dtype: dtype,
+                                                   pidx: points};
 
             }
 
@@ -2262,8 +2278,18 @@ impl QuiltSpec {
 
 }
 
+//////////////////////////////////////////////////////////////////////
+// the important quilt data structure that puts everything together
 
-// module visibility 
+// for specifying coordinate frames of points
+#[derive(Debug,PartialEq,Clone,Copy)]
+enum CoordinateFrame {
+    Design, // frame that original pattern is defined in
+    Quilt   // frame of quilt itself - note that quilt is centered at (0, 0) in this frame
+}
+
+
+// visibility of half-tiles at various sizes within quilt
 #[derive(Debug,PartialEq,Clone,Copy)]
 enum Visibility {
     Invisible, // no child leaf modules overlap view rect
@@ -2271,28 +2297,19 @@ enum Visibility {
     Full       // all child leaf modules overlap view rect
 }
 
-#[allow(dead_code)]
 struct Quilt {
     
-    qs: QuiltSpec,
-    pt: PenroseTiling,
-
-    raw_box: Box2d, 
-    xform_fwd: Similarity2d,
-    xform_inv: Similarity2d,
-    
-    xformed_verts: Vec<Point2d>,
-
+    qs: QuiltSpec,                     // specification for this quilt
+    pt: PenroseTiling,                 // penrose tiling created to specific depth. holds points in Design frame
+    raw_box: Box2d,                    // half-dimensions of quilt in Quilt frame 
+    xform_d_from_q: Similarity2d,      // used to map back to Design frame from uilt frame (for drawing boxes, mostly)
+    points_quilt: Vec<Point2d>,         // q
     child_leafs: Vec<Vec<usize>>,
-
-    htile_visibility: Vec<Visibility>,
-
-    visible_leaf_htiles: Vec<usize>,
-    visible_top_level_modules: Vec<usize>,
-
+    htile_visibility: Vec<Visibility>, //
+    visible_leafs: Vec<usize>,         // half-tile indices of all visible smallest-subdivision half-tiles
+    visible_modules: Vec<usize>,       // all half-tiles (of any size) which are Full visible but parents are Partial
     seams: Vec<SeamDrawInfo>,
     instructions: Vec<Vec<String>>
-        
 
 }
 
@@ -2301,10 +2318,10 @@ impl Quilt {
     fn scale_factor(&self, frame: CoordinateFrame) -> f64 {
 
         match frame {
-            CoordinateFrame::OrigCoords => {
-                self.xform_fwd.scaling()
+            CoordinateFrame::Design => {
+                self.xform_d_from_q.scaling()
             },
-            CoordinateFrame::XformedCoords => {
+            CoordinateFrame::Quilt => {
                 1.0
             }
         }
@@ -2321,7 +2338,7 @@ impl Quilt {
         let mut pt = sfunc();
 
         println!("got {:} root htiles, {:} vertices", 
-                 pt.htiles.len(), pt.verts.len());
+                 pt.htiles.len(), pt.points.len());
         
         for _ in 0..qs.depth {
             pt.subdivide();
@@ -2329,7 +2346,7 @@ impl Quilt {
             println!("got {:} htiles ({:} leaf htiles), {:} vertices", 
                      pt.htiles.len(), 
                      pt.htiles.len() - pt.generations.last().unwrap(),
-                     pt.verts.len());
+                     pt.points.len());
         }
         
         println!();
@@ -2340,7 +2357,7 @@ impl Quilt {
 
             AngleType::VDiff(axis, idx0, idx1) => { 
                 
-                let uv = pt.verts[idx1] - pt.verts[idx0];
+                let uv = pt.points[idx1] - pt.points[idx0];
 
                 match axis {
                     Axis::PosX => uv[1].atan2(uv[0]),
@@ -2364,7 +2381,7 @@ impl Quilt {
             CenterType::Fit => { 
 
                 
-                let rect = pt.verts.iter().fold(
+                let rect = pt.points.iter().fold(
                     Rect2d::empty(), 
                     |mut rect, &p| { 
                         rect.expand(&(rotation * p));
@@ -2375,12 +2392,12 @@ impl Quilt {
 
             },
 
-            CenterType::VertIndexArray(verts) => { 
+            CenterType::VertIndexArray(points) => { 
 
-                let rect = verts.iter().fold(
+                let rect = points.iter().fold(
                     Rect2d::empty(),
-                    |mut rect, &vidx| {
-                        rect.expand(&(rotation * &pt.verts[vidx]));
+                    |mut rect, &pidx| {
+                        rect.expand(&(rotation * &pt.points[pidx]));
                         rect
                     });
 
@@ -2400,20 +2417,20 @@ impl Quilt {
         let z = qs.scale * grow;
         let scl = 1.0 / z;
 
-        let mut xform_fwd = Similarity2d::new(center-Point2d::origin(), angle, scl);
+        let mut xform_d_from_q = Similarity2d::new(center-Point2d::origin(), angle, scl);
 
-        let mut xform_inv = xform_fwd.inverse();
+        let mut xform_q_from_d = xform_d_from_q.inverse();
 
         if let Some(nudge) = qs.nudge {
             
             let xform_nudge = Translation2d::new(nudge.x, nudge.y);
 
-            xform_inv = xform_nudge * xform_inv;
-            xform_fwd = xform_inv.inverse();
+            xform_q_from_d = xform_nudge * xform_q_from_d;
+            xform_d_from_q = xform_q_from_d.inverse();
             
         }
 
-        let xformed_verts: Vec<Point2d> = pt.verts.iter().map(|x| xform_inv * x).collect();
+        let points_quilt: Vec<Point2d> = pt.points.iter().map(|x| xform_q_from_d * x).collect();
 
         let eps = Vec2d::repeat(1e-5*qs.scale);
 
@@ -2423,7 +2440,7 @@ impl Quilt {
 
                 let mut r = Vec2d::new(0.0, 0.0);
 
-                for p in &xformed_verts {
+                for p in &points_quilt {
                     r = r.sup(&Vec2d::new(p[0].abs(), p[1].abs()));
                 }
 
@@ -2436,28 +2453,28 @@ impl Quilt {
                 let r = 0.5*Vec2d::new(*width, *height);
 
                 match dtype {
-                    DimType::Raw => r,
-                    DimType::Finished => r + Vec2d::repeat(qs.border_allowance),
+                    RectDimType::Raw => r,
+                    RectDimType::Finished => r + Vec2d::repeat(qs.border_allowance),
                     _ => bail!("only raw and finished bindings supported here")
                         
                 }
                 
             }
 
-            RectType::Verts{dtype, vidx} => {
+            RectType::Points{dtype, pidx} => {
 
                 let mut r = Vec2d::new(0.0, 0.0);
 
-                for i in vidx {
-                    let p = xformed_verts[*i];
+                for i in pidx {
+                    let p = points_quilt[*i];
                     r = r.sup(&Vec2d::new(p[0].abs(), p[1].abs()));
                 }
 
                 r = (r - eps).sup(&Vec2d::zeros());
 
                 match dtype {
-                    DimType::Raw => r,
-                    DimType::Finished => r + Vec2d::repeat(qs.border_allowance),
+                    RectDimType::Raw => r,
+                    RectDimType::Finished => r + Vec2d::repeat(qs.border_allowance),
                     _ => bail!("only raw and finished bindings supported here")
                 }
 
@@ -2470,17 +2487,17 @@ impl Quilt {
         let child_leafs = pt.get_child_leafs();
 
         let mut htile_visibility = vec![Visibility::Invisible; pt.htiles.len()];
-        let mut visible_leaf_htiles = Vec::new();
+        let mut visible_leafs = Vec::new();
 
         for (tidx, tri) in pt.last_gen_htiles() {
 
-            let (v0, v1, v2) = tri.get_verts(&xformed_verts);
+            let (p0, p1, p2) = tri.get_points(&points_quilt);
 
-            if raw_box.overlaps_tri(v0, v1, v2) {
+            if raw_box.overlaps_tri(p0, p1, p2) {
 
                 htile_visibility[tidx] = Visibility::Full;
 
-                visible_leaf_htiles.push(tidx);
+                visible_leafs.push(tidx);
                 
             }
 
@@ -2511,7 +2528,7 @@ impl Quilt {
 
         }
 
-        let mut visible_top_level_modules = Vec::new();
+        let mut visible_modules = Vec::new();
 
         for (i, t) in pt.htiles.iter().enumerate() {
             
@@ -2526,7 +2543,7 @@ impl Quilt {
             };
 
             if me_overlaps && !parent_overlaps {
-                visible_top_level_modules.push(i)
+                visible_modules.push(i)
             }
             
         }
@@ -2535,8 +2552,8 @@ impl Quilt {
 
         let (seams, instructions) = batch_seams(&pt, 
                                                 &child_leafs,
-                                                &visible_top_level_modules, 
-                                                &xformed_verts,
+                                                &visible_modules, 
+                                                &points_quilt,
                                                 precis);
 
 
@@ -2546,16 +2563,15 @@ impl Quilt {
             pt: pt,
 
             raw_box: raw_box,
-            xform_fwd: xform_fwd,
-            xform_inv: xform_inv,
-            xformed_verts: xformed_verts,
+            xform_d_from_q: xform_d_from_q,
+            points_quilt: points_quilt,
 
             child_leafs: child_leafs,
 
             htile_visibility: htile_visibility,
 
-            visible_leaf_htiles: visible_leaf_htiles,
-            visible_top_level_modules: visible_top_level_modules,
+            visible_leafs: visible_leafs,
+            visible_modules: visible_modules,
 
             seams: seams,
             instructions: instructions
@@ -2564,16 +2580,16 @@ impl Quilt {
 
     }
 
-    fn box_verts(&self, dtype: DimType, frame: CoordinateFrame) -> Vec<Point2d> {
+    fn box_points(&self, dtype: RectDimType, frame: CoordinateFrame) -> Vec<Point2d> {
 
         let h = self.raw_box.half_dims + match dtype {
-            DimType::Raw => Vec2d::zeros(),
-            DimType::Finished => Vec2d::repeat(-self.qs.border_allowance),
-            DimType::Border => Vec2d::repeat(self.qs.border_width-self.qs.binding_width-self.qs.border_allowance),
-            DimType::Binding => Vec2d::repeat(self.qs.border_width-self.qs.border_allowance)
+            RectDimType::Raw => Vec2d::zeros(),
+            RectDimType::Finished => Vec2d::repeat(-self.qs.border_allowance),
+            RectDimType::Border => Vec2d::repeat(self.qs.border_width-self.qs.binding_width-self.qs.border_allowance),
+            RectDimType::Binding => Vec2d::repeat(self.qs.border_width-self.qs.border_allowance)
         };
 
-        let box_verts = vec![
+        let box_points = vec![
             Point2d::new(h.x, h.y),
             Point2d::new(-h.x, h.y),
             Point2d::new(-h.x, -h.y),
@@ -2582,8 +2598,8 @@ impl Quilt {
 
         match frame {
 
-            CoordinateFrame::XformedCoords => box_verts,
-            CoordinateFrame::OrigCoords => box_verts.iter().map(|&p| self.xform_fwd * p).collect()
+            CoordinateFrame::Quilt => box_points,
+            CoordinateFrame::Design => box_points.iter().map(|&p| self.xform_d_from_q * p).collect()
 
         }
 
@@ -2771,16 +2787,16 @@ fn get_draw_lengths(quilt: &Quilt,
 fn label_tri(ctx: &cairo::Context,
              num_generations: usize,
              t: &HalfTile,
-             xverts: &Vec<Point2d>) -> Result<()> {
+             xpoints: &Vec<Point2d>) -> Result<()> {
 
-    let (v0, v1, v2) = t.get_verts(&xverts);
+    let (p0, p1, p2) = t.get_points(&xpoints);
 
     let vdiff = match t.tside {
-        TriangleSide::Left => v2 - v0, 
-        TriangleSide::Right => v0 - v2
+        TriangleSide::Left => p2 - p0, 
+        TriangleSide::Right => p0 - p2
     };
 
-    let (center, r) = tri_incenter_radius(v0, v1, v2)?;
+    let (center, r) = tri_incenter_radius(p0, p1, p2)?;
 
     let level = t.level(num_generations);
     let text = tri_type_side_level_string(t.ttype, t.tside, level);
@@ -2804,7 +2820,7 @@ fn label_tri(ctx: &cairo::Context,
 fn draw_triangles(ctx: &cairo::Context,
                   pt: &PenroseTiling,
                   child_leafs: &Vec<Vec<usize>>,
-                  xverts: &Vec<Point2d>,
+                  xpoints: &Vec<Point2d>,
                   draw_lengths: &DrawLengths,
                   tri_indices: &Vec<usize>,
                   two_color_palette: bool,
@@ -2826,9 +2842,9 @@ fn draw_triangles(ctx: &cairo::Context,
 
             let t = &pt.htiles[i];
             
-            let (v0, v1, v2) = t.get_verts(&xverts);
+            let (p0, p1, p2) = t.get_points(&xpoints);
             
-            ctx.drawtri(v0, v1, v2);
+            ctx.drawtri(p0, p1, p2);
 
         }
 
@@ -2856,12 +2872,12 @@ fn draw_triangles(ctx: &cairo::Context,
             let cv = Vec3d::new(c[0], c[1], c[2]);
             let cv = cv * 0.125 + Vec3d::repeat(0.875);
 
-            let (v0, v1, v2) = t.get_verts(&xverts);
+            let (p0, p1, p2) = t.get_points(&xpoints);
 
-            let (b0, b1, b2, _) = tri_border(v0, v1, v2, draw_lengths.line_inset, 0.25*lw)?;
+            let (b0, b1, b2, _) = tri_border(p0, p1, p2, draw_lengths.line_inset, 0.25*lw)?;
 
             ctx.setcolor(&(0.375*cv + 0.625*Vec3d::repeat(0.5)));
-            ctx.drawtri(v0, v1, v2);
+            ctx.drawtri(p0, p1, p2);
             ctx.fill();
 
             ctx.setcolor(&cv);
@@ -2879,7 +2895,7 @@ fn draw_triangles(ctx: &cairo::Context,
 
         for &i in tri_indices.iter() {
 
-            label_tri(ctx, pt.generations.len(), &pt.htiles[i], &xverts)?;
+            label_tri(ctx, pt.generations.len(), &pt.htiles[i], &xpoints)?;
 
         }
         
@@ -2892,21 +2908,21 @@ fn draw_triangles(ctx: &cairo::Context,
 
             ctx.set_source_rgb(0.0, 0.0, 0.0);
 
-            let mut vverts: HashSet<usize> = HashSet::new();
+            let mut vpoints: HashSet<usize> = HashSet::new();
 
             for &i in tri_indices.iter() {
                 let t = &pt.htiles[i];
-                for &v in &t.vidx {
-                    vverts.insert(v);
+                for &v in &t.pidx {
+                    vpoints.insert(v);
                 }
 
             }
 
             ctx.set_font_size((0.25 * draw_lengths.short_side_length).min(12.0));
 
-            for &v in vverts.iter() {
+            for &v in vpoints.iter() {
 
-                let p = &xverts[v];
+                let p = &xpoints[v];
 
                 let text = format!("{:}", v);
 
@@ -2932,54 +2948,54 @@ fn draw_quilt(ctx: &cairo::Context,
               pset: PageSettings) -> Result<()> {
 
     let vvec = match pset.frame {
-        CoordinateFrame::OrigCoords => &quilt.pt.verts,
-        CoordinateFrame::XformedCoords => &quilt.xformed_verts
+        CoordinateFrame::Design => &quilt.pt.points,
+        CoordinateFrame::Quilt => &quilt.points_quilt
     };
     
-    let mut verts_rect = Rect2d::empty();
+    let mut contents_rect = Rect2d::empty();
 
     let mut boxes = HashMap::new();
 
-    let dtypes = [DimType::Raw, DimType::Finished, DimType::Binding, DimType::Border];
+    let dtypes = [RectDimType::Raw, RectDimType::Finished, RectDimType::Binding, RectDimType::Border];
 
     for &dtype in &dtypes {
 
-        let box_verts = quilt.box_verts(dtype, pset.frame);
-        boxes.insert(dtype, box_verts);
+        let box_points = quilt.box_points(dtype, pset.frame);
+        boxes.insert(dtype, box_points);
 
     }
 
     if pset.draw_as_finished {
 
-        for p in boxes.get(&DimType::Binding).unwrap() {
-            verts_rect.expand(p);
+        for p in boxes.get(&RectDimType::Binding).unwrap() {
+            contents_rect.expand(p);
         }
 
     } else {
 
         for tri in tri_indices.iter().map(|&i| &quilt.pt.htiles[i]) {
-            for &i in &tri.vidx {
-                verts_rect.expand(&vvec[i]);
+            for &i in &tri.pidx {
+                contents_rect.expand(&vvec[i]);
             }
         }
 
-        for p in boxes.get(&DimType::Raw).unwrap() {
-            verts_rect.expand(p);
+        for p in boxes.get(&RectDimType::Raw).unwrap() {
+            contents_rect.expand(p);
         }
 
 
     }
 
     
-    let (transform, scl) = get_page_transform(&verts_rect, &page_rect, pset.hflip);
+    let (transform, scl) = get_page_transform(&contents_rect, &page_rect, pset.hflip);
 
     let draw_lengths = get_draw_lengths(&quilt, pset.frame, scl);
 
     for dtype in &dtypes {
 
-        let box_verts = boxes.get_mut(dtype).unwrap();
+        let box_points = boxes.get_mut(dtype).unwrap();
 
-        for p in box_verts { *p = transform * *p; }
+        for p in box_points { *p = transform * *p; }
 
     }
 
@@ -3001,7 +3017,7 @@ fn draw_quilt(ctx: &cairo::Context,
                     let cv = cv * 0.125 + Vec3d::repeat(0.875);
                     
                     ctx.setcolor(&cv);
-                    ctx.drawpoly(&boxes.get(&DimType::Binding).unwrap());
+                    ctx.drawpoly(&boxes.get(&RectDimType::Binding).unwrap());
                     ctx.set_line_width(2.0);
                     ctx.fill_preserve();
                     ctx.stroke();
@@ -3010,22 +3026,22 @@ fn draw_quilt(ctx: &cairo::Context,
 
             }
 
-            ctx.drawpoly(&boxes.get(&DimType::Border).unwrap());
+            ctx.drawpoly(&boxes.get(&RectDimType::Border).unwrap());
             ctx.set_line_width(2.0);
             ctx.fill_preserve();
             ctx.stroke();
 
-            ctx.drawpoly(&boxes.get(&DimType::Finished).unwrap());
+            ctx.drawpoly(&boxes.get(&RectDimType::Finished).unwrap());
             ctx.clip();
 
         }
         
-        let xverts: Vec<Point2d> = vvec.iter().map(|x| transform*x).collect();
+        let xpoints: Vec<Point2d> = vvec.iter().map(|x| transform*x).collect();
 
 
         draw_triangles(ctx, &quilt.pt,
                        &quilt.child_leafs,
-                       &xverts, 
+                       &xpoints, 
                        &draw_lengths,
                        tri_indices, 
                        pset.two_color_palette,
@@ -3044,13 +3060,13 @@ fn draw_quilt(ctx: &cairo::Context,
                 ctx.set_line_width(lw);
                 ctx.set_source_rgb(0.75, 0., 0.);
 
-                let verts = &boxes.get(&DimType::Finished).unwrap();
+                let points = &boxes.get(&RectDimType::Finished).unwrap();
 
-                ctx.drawpoly(&verts);
+                ctx.drawpoly(&points);
                 ctx.stroke();
 
                 ctx.set_dash(&[4.0*lw, 4.0*lw], 0.0);
-                ctx.drawpoly(&boxes.get(&DimType::Raw).unwrap());
+                ctx.drawpoly(&boxes.get(&RectDimType::Raw).unwrap());
                 
                 ctx.stroke();
 
@@ -3065,14 +3081,14 @@ fn draw_quilt(ctx: &cairo::Context,
             ctx.set_font_size(10.0);
 
             let xform = match pset.frame {
-                CoordinateFrame::OrigCoords => transform * quilt.xform_fwd,
-                CoordinateFrame::XformedCoords => transform
+                CoordinateFrame::Design => transform * quilt.xform_d_from_q,
+                CoordinateFrame::Quilt => transform
             };
 
             for (sidx, seam) in quilt.seams.iter().enumerate() {
                 
-                let p0 = xform * vvec[seam.vidx0];
-                let p1 = xform * vvec[seam.vidx1];
+                let p0 = xform * vvec[seam.pidx0];
+                let p1 = xform * vvec[seam.pidx1];
 
                 let d10 = p1 - p0;
 
@@ -3082,8 +3098,8 @@ fn draw_quilt(ctx: &cairo::Context,
 
                 let dir = d10 / len;
 
-                //let s = format!("{:}", sidx+1);
-                let s = format!("L{:}", seam.lidx);
+                let s = format!("{:}", sidx+1);
+                //let s = format!("L{:}", seam.lidx);
                 let text = s.as_str();
 
                 let extents = ctx.text_extents(text);
@@ -3324,30 +3340,30 @@ fn assembly_drawable<'a>(ctx: &cairo::Context,
     let short_side_length = base_scale * grow;
     let line_inset = base_scale * inset_frac * grow / ideal_grow;
     
-    let mut verts_rect = Rect2d::empty();
+    let mut contents_rect = Rect2d::empty();
 
-    for v in &mut pt.verts {
+    for v in &mut pt.points {
         *v = *v * short_side_length;
-        verts_rect.expand(v);
+        contents_rect.expand(v);
     }
 
-    let mut vdims = verts_rect.p1 - verts_rect.p0;
+    let mut cdims = contents_rect.p1 - contents_rect.p0;
 
-    if vdims.x > max_width {
-        vdims *= max_width / vdims.x;
+    if cdims.x > max_width {
+        cdims *= max_width / cdims.x;
     }
 
     let page_rect = Rect2d { 
         p0: Point2d::origin(),
-        p1: Point2d::origin() + vdims
+        p1: Point2d::origin() + cdims
     };
 
-    let (transform, scl) = get_page_transform(&verts_rect, &page_rect, HFlip::Yes);
+    let (transform, scl) = get_page_transform(&contents_rect, &page_rect, HFlip::Yes);
 
     let short_side_length = short_side_length * scl;
     let line_inset = line_inset * scl;
 
-    for v in &mut pt.verts {
+    for v in &mut pt.points {
         *v = transform * *v;
     }
 
@@ -3373,7 +3389,7 @@ fn assembly_drawable<'a>(ctx: &cairo::Context,
             line_width: 1.0
         };
        
-        draw_triangles(ctx, &pt, &child_leafs, &pt.verts, 
+        draw_triangles(ctx, &pt, &child_leafs, &pt.points, 
                        &draw_lengths, &indices,
                        false, true, false)?;
 
@@ -3381,25 +3397,25 @@ fn assembly_drawable<'a>(ctx: &cairo::Context,
 
             with_save_restore!(ctx, { 
 
-                let (v0, v1, v2) = pt.htiles[0].get_verts(&pt.verts);
+                let (p0, p1, p2) = pt.htiles[0].get_points(&pt.points);
 
-                ctx.moveto(v0);
-                ctx.lineto(v1);
-                ctx.lineto(v2);
+                ctx.moveto(p0);
+                ctx.lineto(p1);
+                ctx.lineto(p2);
                 ctx.close_path();
                 ctx.clip();
                 
                 ctx.set_line_cap(cairo::LineCap::Round);
                 ctx.set_source_rgba(0.75, 0.0, 0.0, 0.625);
-                ctx.set_line_width(0.02*vdims.x);
+                ctx.set_line_width(0.02*cdims.x);
 
                 for s in splits.iter() {
 
-                    let v0 = &pt.verts[s.vidx0];
-                    let v1 = &pt.verts[s.vidx1];
+                    let p0 = &pt.points[s.pidx0];
+                    let p1 = &pt.points[s.pidx1];
 
-                    ctx.moveto(v0);
-                    ctx.lineto(v1);
+                    ctx.moveto(p0);
+                    ctx.lineto(p1);
 
                     
                 }
@@ -3415,7 +3431,7 @@ fn assembly_drawable<'a>(ctx: &cairo::Context,
                        
     };
 
-    let b = Drawable::Box { dims: vdims, drawfunc: Box::new(drawfunc) };
+    let b = Drawable::Box { dims: cdims, drawfunc: Box::new(drawfunc) };
 
     let text = format!("{:}× {:}", count, tri_type_side_level_string(ttype, tside, level));
 
@@ -3485,21 +3501,21 @@ fn draw_templates(ctx: &cairo::Context,
         
         let rotate = Rotation2d::new(ysign * 36.0 * DEG);
 
-        for v in &mut pt.verts {
+        for v in &mut pt.points {
             *v = *v * scale * INCH;
             *v = rotate * *v;
         }
 
-        let (v0, v1, v2) = pt.htiles[0].get_verts(&pt.verts);
+        let (p0, p1, p2) = pt.htiles[0].get_points(&pt.points);
 
-        let outer_tri = vec![*v0, *v1, *v2];
+        let outer_tri = vec![*p0, *p1, *p2];
 
 
-        let (b0, b1, b2, b3) = tri_border(v0, v1, v2, line_inset*INCH, 0.0)?;
+        let (b0, b1, b2, b3) = tri_border(p0, p1, p2, line_inset*INCH, 0.0)?;
 
         let inner = vec![b0, b1, b2];
-        let border1 = vec![b0, b1, b3, *v0];
-        let border2 = vec![b2, b3, *v1, *v2];
+        let border1 = vec![b0, b1, b3, *p0];
+        let border2 = vec![b2, b3, *p1, *p2];
 
         let allowance = 0.5 * INCH;
 
@@ -3563,21 +3579,21 @@ fn draw_templates(ctx: &cairo::Context,
 
         
 
-        let mut verts_rect = Rect2d::empty(); 
+        let mut contents_rect = Rect2d::empty(); 
         
         for thing in &drawstuff {
             for point in &thing.points {
-                verts_rect.expand(point)
+                contents_rect.expand(point)
             }
         }
 
         let y = 0.5*PAGE_LONG_EDGE + ysign * 0.5*(0.5*PAGE_LONG_EDGE - MARGIN);
         
         let page_center = Point2d::new(0.5*PAGE_SHORT_EDGE, y);
-        let hdims = 0.5*verts_rect.dims();
+        let hdims = 0.5*contents_rect.dims();
         let page_rect = Rect2d { p0: page_center - hdims, p1: page_center + hdims };
         
-        let (transform, _) = get_page_transform(&verts_rect, &page_rect, HFlip::Yes);
+        let (transform, _) = get_page_transform(&contents_rect, &page_rect, HFlip::Yes);
         
         for thing in &mut drawstuff {
 
@@ -3665,7 +3681,7 @@ fn run() -> Result<()> {
     };
 
     draw(&all_leaf_htiles, &landscape_rect, PageSettings {
-        frame: CoordinateFrame::OrigCoords,
+        frame: CoordinateFrame::Design,
         draw_as_finished: false,
         two_color_palette: true,
         label_htiles: false,
@@ -3676,8 +3692,8 @@ fn run() -> Result<()> {
 
     ctx.show_page();
 
-    draw(&quilt.visible_leaf_htiles, &landscape_rect, PageSettings {
-        frame: CoordinateFrame::XformedCoords,
+    draw(&quilt.visible_leafs, &landscape_rect, PageSettings {
+        frame: CoordinateFrame::Quilt,
         draw_as_finished: true,
         two_color_palette: true,
         label_htiles: false,
@@ -3762,8 +3778,8 @@ fn run() -> Result<()> {
 
     layout_page(&ctx, &portrait_rect, &drawables, spacing)?;
 
-    draw(&quilt.visible_top_level_modules, &portrait_rect, PageSettings {
-        frame: CoordinateFrame::XformedCoords,
+    draw(&quilt.visible_modules, &portrait_rect, PageSettings {
+        frame: CoordinateFrame::Quilt,
         draw_as_finished: false,
         two_color_palette: false,
         label_htiles: true,

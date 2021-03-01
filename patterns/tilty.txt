@@ -1,5 +1,5 @@
 source half_kite depth 8
-center_verts 397 1028
+center_points 397 1028
 angle_deg 190
 scale_long_side 6.0
 line_inset 0.5
