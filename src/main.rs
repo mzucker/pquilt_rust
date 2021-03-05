@@ -2066,7 +2066,7 @@ fn rel_path(orig_filename: &str,
 
 }
 
-fn make_pattern(ifilename: &String) -> Result<(cairo::SurfacePattern, f64)> {
+fn make_surface_pattern(ifilename: &String) -> Result<(cairo::SurfacePattern, f64)> {
 
     let ireader = ImageReader::open(ifilename.clone()).chain_err(
         || format!("texture file not found: {:}", ifilename))?;
@@ -2461,7 +2461,7 @@ impl QuiltSpec {
 
                             let pidx_new = style.surface_patterns.len();
 
-                            style.surface_patterns.push(make_pattern(&ifilename)?);
+                            style.surface_patterns.push(make_surface_pattern(&ifilename)?);
 
                             v.insert(pidx_new);
 
