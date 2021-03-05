@@ -3106,6 +3106,7 @@ fn label_tri(ctx: &cairo::Context,
 fn set_source_for_item(ctx: &cairo::Context,
                        fill_idx: usize,
                        draw_lengths: &DrawLengths,
+                       dir: Option<Vec2d>,
                        style: &Option<Style>,
                        use_style: bool) -> Result<()> {
 
@@ -3127,11 +3128,17 @@ fn set_source_for_item(ctx: &cairo::Context,
 
                 let scl = pattern_width / (draw_lengths.short_side_length * repeat_width);
 
-                let t = Vec2d::new_random() * *pattern_width;
+                let n = match dir {
+                    None => Vec2d::new(scl, 0.0),
+                    Some(dir) => scl * dir / dir.norm(),
+                };
 
-                let matrix = cairo::Matrix::new(scl, 0.0,
-                                                0.0, scl,
-                                                scl*t.x, scl*t.y);
+                let c = n.x;
+                let s = n.y;
+
+                let matrix = cairo::Matrix::new(c, -s,
+                                                s, c,
+                                                0.0, 0.0);
 
                 surface_pattern.set_matrix(matrix);
                 ctx.set_source(surface_pattern);
@@ -3218,24 +3225,10 @@ fn draw_triangles(ctx: &cairo::Context,
                 let p1 = poly[1];
 
                 let dir = p1 - p0;
-                let n = dir / dir.norm();
-
-                let theta = n.y.atan2(n.x);
-                
-                let rotation = Rotation2d::new(-theta);
-                let translation = Translation2d::new(-p0.x, -p0.y);
-
-                let transform = rotation * translation;
-
-                let poly = poly.iter().map(|p| transform * p).collect();
                         
-                with_save_restore!(ctx, {
-                    ctx.translate(p0.x, p0.y);
-                    ctx.rotate(theta);
-                    ctx.drawpoly(&offset_convex_poly(&poly, offset, nosnip)?);
-                    set_source_for_item(ctx, *idx, draw_lengths, style, use_style)?;
-                    ctx.fill();
-                });
+                ctx.drawpoly(&offset_convex_poly(poly, offset, nosnip)?);
+                set_source_for_item(ctx, *idx, draw_lengths, Some(dir), style, use_style)?;
+                ctx.fill();
                 
             }
 
@@ -3373,7 +3366,9 @@ fn draw_quilt(ctx: &cairo::Context,
 
                 with_save_restore!(ctx, {
                     
-                    set_source_for_item(ctx, 13, &draw_lengths, &quilt.qs.style, pset.use_style)?;
+                    set_source_for_item(ctx, 13, &draw_lengths, None,
+                                        &quilt.qs.style, pset.use_style)?;
+
                     ctx.drawpoly(&boxes.get(&RectDimType::Binding).unwrap());
                     ctx.set_line_width(2.0);
                     ctx.fill_preserve();
@@ -3383,7 +3378,9 @@ fn draw_quilt(ctx: &cairo::Context,
 
             }
             
-            set_source_for_item(ctx, 12, &draw_lengths, &quilt.qs.style, pset.use_style)?;
+            set_source_for_item(ctx, 12, &draw_lengths, None, 
+                                &quilt.qs.style, pset.use_style)?;
+
             ctx.drawpoly(&boxes.get(&RectDimType::Border).unwrap());
             ctx.set_line_width(2.0);
             ctx.fill_preserve();
