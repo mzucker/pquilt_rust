@@ -11,6 +11,9 @@ use std::io::{BufRead, BufReader};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::hash_map::Entry::{Occupied, Vacant};
+extern crate cairo;
+use image::io::Reader as ImageReader;
+use image::Pixel;
 
 //////////////////////////////////////////////////////////////////////
 // use error chain so we can use Result<> everywhere
@@ -27,6 +30,8 @@ mod errors {
             Fmt(::std::fmt::Error);
             Io(::std::io::Error) #[cfg(unix)];
             Cairo(::cairo::Error);
+            CairoBorrow(::cairo::BorrowError);
+            Image(::image::ImageError);
         }
 
     }
@@ -306,8 +311,7 @@ fn tri_incenter_radius(p0: &Point2d,
 // given a convex polygon return a convex polygon that is offset by
 // the given distance.
 
-#[derive(Debug,PartialEq)]
-#[allow(dead_code)] // we only do snipped corners but nice to have option
+#[derive(Debug,PartialEq,Clone,Copy)]
 enum SnipCorners {
     Yes,
     No
@@ -392,14 +396,12 @@ fn offset_convex_poly(points: &Vec<Point2d>,
 // dist is the distance from line (p0, p1) to line (b0, b1) and 
 // line (p1, p2) to line (b1, b2)
 //
-// dilate is an extra amount to dilate the resulting triangle
 // (b0, b1, b2) to ensure drawing with no gaps
 
 fn tri_border(p0: &Point2d, 
               p1: &Point2d,
               p2: &Point2d, 
-              dist: f64,
-              dilate: f64) -> Result<(Point2d, Point2d, Point2d, Point2d)> {
+              dist: f64) -> Result<(Point2d, Point2d, Point2d, Point2d)> {
 
 
     let l01 = line_from_points(p0, p1);
@@ -408,12 +410,7 @@ fn tri_border(p0: &Point2d,
 
     let s = if l01.dot(&p2.to_homogeneous()) < 0.0 { -1.0 } else { 1.0 };
 
-    let odilate = Vec3d::new(0.0, 0.0, s*dilate);
     let odist = Vec3d::new(0.0, 0.0, -s*dist);
-
-    let l01 = l01 + odilate;
-    let l12 = l12 + odilate;
-    let l20 = l20 + odilate;
 
     let k01 = l01 + odist;
     let k12 = l12 + odist;
@@ -1149,7 +1146,7 @@ impl Seam {
 
         let line = &pt.lines[lidx];
 
-        debug_assert!(line.parent != None);
+        debug_assert!(line.parent.is_some());
 
         for (_, &u) in &line.vlookup {
 
@@ -1825,6 +1822,42 @@ enum RectType {
     Points { dtype: RectDimType, pidx: Vec<usize> }
 }
 
+
+#[derive(Debug,Clone)]
+enum Fill {
+    None,
+    RGB((u8, u8, u8)),
+    Texture((cairo::SurfacePattern, f64, f64)), 
+}
+
+impl Default for Fill {
+    fn default() -> Self { Self::None }
+}
+
+const FILL_HALF_TILES_START: usize = 0;
+const FILL_LINES_START: usize = FILL_HALF_TILES_START + 4;
+const FILL_BORDER: usize = FILL_LINES_START + 8;
+const FILL_BINDING: usize = FILL_BORDER + 1;
+const NUM_FILLS: usize = FILL_BINDING + 1;
+
+// TODO: change into struct with vec + indexes
+#[derive(Debug,Clone)]
+struct Style {
+    patterns: Vec<Fill>,
+    textures: Vec<cairo::Surface>,
+    pidx: [usize; NUM_FILLS]
+}
+
+impl Default for Style {
+    fn default() -> Self { 
+        Self { 
+            patterns: vec![], 
+            textures: vec![],
+            pidx: [usize::MAX; NUM_FILLS]
+        }
+    }
+}
+
 // 0-input function generating a Penrose tiling
 type TriFunc = fn() -> PenroseTiling;
 
@@ -1842,7 +1875,8 @@ struct QuiltSpec {
     border_allowance: f64, // difference between Raw and Finished edges, in output units
     nudge: Option<Vec2d>,  // extra output-frame offset to apply to center
     border_width: f64,     // dimension of quilt border in output units
-    binding_width: f64     // dimension of quilt binding in output units
+    binding_width: f64,    // dimension of quilt binding in output units
+    style: Option<Style> // fills for each type of element
 }
 
 // define a lookup table matching strings to functions generating
@@ -1974,6 +2008,15 @@ macro_rules! copy_field {
             }
             $dst.$field = $src.$field;
         }
+    );
+
+    ($dst:ident, $src:ident, $field:ident) => (
+        if $src.$field.is_some() {
+            if $dst.$field.is_some() {
+                bail!("{:} is already set", stringify!($field));
+            }
+            $dst.$field = $src.$field;
+        }
     )
 
 }
@@ -1990,12 +2033,12 @@ macro_rules! ensure_field {
 
 //////////////////////////////////////////////////////////////////////
 
-fn parse_indices(tokens: &[&str]) -> Result<Vec<usize>> {
+fn parse_indices<T: std::str::FromStr>(tokens: &[&str]) -> Result<Vec<T>> {
 
     let mut rval = Vec::new();
 
     for value in tokens {
-        if let Ok(idx) = value.parse::<usize>() {
+        if let Ok(idx) = value.parse::<T>() {
             rval.push(idx);
         } else {
             bail!("invalid index: {:}", value);
@@ -2007,6 +2050,21 @@ fn parse_indices(tokens: &[&str]) -> Result<Vec<usize>> {
 
 //////////////////////////////////////////////////////////////////////
 // implementation for QuiltSpec - basically deal with parsing
+
+fn rel_path(orig_filename: &str, 
+            child_filename: String) -> String {
+
+    let orig_filename = Path::new(orig_filename);
+
+    match orig_filename.parent() {
+
+        None => child_filename,
+
+        Some(parent) => Path::join(parent, child_filename).into_os_string().into_string().unwrap()
+
+    }
+
+}
 
 impl QuiltSpec {
 
@@ -2024,13 +2082,14 @@ impl QuiltSpec {
             nudge: None,
             border_width: 0.0,
             binding_width: 0.0,
+            style: None,
         }
     }
 
 
     fn update(&mut self, other: QuiltSpec) -> Result<()> {
         
-        copy_field!(self, other, source, None);
+        copy_field!(self, other, source);
         copy_field!(self, other, depth, usize::MAX);
         copy_field!(self, other, center, CenterType::Unset);
         copy_field!(self, other, angle, AngleType::Unset);
@@ -2038,15 +2097,17 @@ impl QuiltSpec {
         copy_field!(self, other, rect_dims, RectType::Unset);
         copy_field!(self, other, line_inset, -1.0);
         copy_field!(self, other, border_allowance, -1.0);
-        copy_field!(self, other, nudge, None);
+        copy_field!(self, other, nudge);
         copy_field!(self, other, border_width, 0.0);
         copy_field!(self, other, binding_width, 0.0);
+        copy_field!(self, other, style);
 
         Ok(())
 
     }
 
-    fn parse_keyword(keyword: &str,
+    fn parse_keyword(filename: &str,
+                     keyword: &str,
                      rest: &[&str]) -> Result<QuiltSpec> {
 
         let mut update = QuiltSpec::new();
@@ -2199,6 +2260,17 @@ impl QuiltSpec {
 
             },
 
+            "style" => {
+                
+                let sfilename = parse_tokens!(rest, { filename: String })?;
+
+                let sfilename = rel_path(filename, sfilename);
+
+                update.style = Some(Self::parse_style(&sfilename)?);
+
+
+            }
+
             _ => {
                 bail!("unrecognized keyword");
             }
@@ -2210,7 +2282,7 @@ impl QuiltSpec {
 
     }
     
-    fn update_from(&mut self, line: &str) -> Result<()> {
+    fn update_from(&mut self, filename: &str, line: &str) -> Result<()> {
 
         let mut trimmed = line.trim();
         
@@ -2227,10 +2299,181 @@ impl QuiltSpec {
         let keyword = tokens[0];
         let rest = &tokens[1..];
 
-        let update = Self::parse_keyword(keyword, rest).chain_err(
+        let update = Self::parse_keyword(filename, keyword, rest).chain_err(
             || format!("while parsing keyword {:}", keyword))?;
 
         self.update(update)
+
+    }
+
+    fn parse_style(filename: &str) -> Result<Style> {
+
+        let f = File::open(filename).chain_err(|| format!("opening {:}", filename))?;
+        let mut reader = BufReader::new(f);
+
+        let mut style: Style = Default::default();
+
+        let mut lineno = 0;
+
+        loop {
+
+            let mut line = String::new();
+            lineno += 1;
+
+            let len = reader.read_line(&mut line).chain_err(|| format!("{:}:{:}: read error", filename, lineno))?;
+
+            if len == 0 {
+                break;
+            }
+
+            let mut trimmed = line.trim();
+            if let Some(pos) = trimmed.find('#') {
+                trimmed = &trimmed[0..pos];
+            }
+
+            if trimmed.len() == 0 {
+                continue;
+            }
+            
+            let tokens: Vec<&str> = trimmed.split(' ').collect();
+
+            let item = tokens[0];
+            let ftype = tokens[1];
+            let rest = &tokens[2..];
+
+            let range = match item {
+                "kite_r" => (0, 1),
+                "kite_l" => (1, 2),
+                "kite" => (0, 2),
+                "dart_r" => (2, 3),
+                "dart_l" => (3, 4),
+                "dart" => (2, 4),
+                "line_kite_rl" => (4, 5),
+                "line_kite_rs" => (5, 6),
+                "line_kite_ll" => (6, 7),
+                "line_kite_ls" => (7, 8),
+                "line_kite_r" => (4, 6),
+                "line_kite_l" => (6, 8),
+                "line_kite" => (4, 8),
+                "line_dart_rl" => (8, 9),
+                "line_dart_rs" => (9, 10),
+                "line_dart_ll" => (10, 11),
+                "line_dart_ls" => (11, 12),
+                "line_dart_r" => (8, 10),
+                "line_dart_l" => (10, 12),
+                "line_dart" => (8, 12),
+                "lines" => (4, 12),
+                "border" => (12, 13),
+                "binding" => (13, 14),
+                _ => { bail!("{:}:{:} invalid style item: {:}",
+                             filename, lineno, item); }
+            };
+
+            let fill = match ftype {
+                "rgb" => {
+                    let indices: Vec<u8> = parse_indices(rest)?;
+                    if indices.len() != 3 {
+                        bail!("need RGB triplet!");
+                    }
+                    Fill::RGB((indices[0], indices[1], indices[2]))
+                },
+                "texture" => {
+
+                    let (ifilename, repeat_width) = 
+                        parse_tokens!(rest, {ifilename: String, 
+                                             repeat_width: f64})?;
+
+
+                    let ifilename = rel_path(filename, ifilename);
+
+                    let ireader = ImageReader::open(ifilename.clone()).chain_err(
+                        || format!("texture file not found: {:}", ifilename))?;
+
+                    let iformat = ireader.format();
+
+                    let img = ireader.decode()?.to_bgra8();
+
+                    let format = cairo::Format::Rgb24;
+
+                    let stride = match format.stride_for_width(img.width()) {
+                        Ok(s) => (s as usize),
+                        _ => { bail!("no stride for format :("); }
+                    };
+
+
+                    let min_stride = (img.width() * 4) as usize;
+                    
+                    debug_assert!(stride >= min_stride);
+
+                    let mut buf: Vec<u8> = vec![];
+                    let padding = vec![0u8; stride - min_stride];
+
+                    for row in img.rows() {
+                        
+                        for pixel in row {
+                            buf.extend(pixel.channels());
+                        }
+                        
+                        buf.extend(&padding);
+
+                    }
+
+                    debug_assert!(buf.len() == (img.height() as usize) * stride);
+
+                    let data_surface = cairo::ImageSurface::create_for_data(
+                        buf, format,
+                        img.width() as i32,
+                        img.height() as i32,
+                        stride as i32)?;
+
+                    
+                    let mime_type: Option<&str> = match iformat {
+                        Some(image::ImageFormat::Jpeg) => Some(cairo::MIME_TYPE_JPEG),
+                        Some(image::ImageFormat::Png)  => Some(cairo::MIME_TYPE_PNG),
+                        _ => { None }
+
+                    };
+
+                    if let Some(mime_type_str) = mime_type {
+                        let mime_data = std::fs::read(ifilename)?;
+                        data_surface.set_mime_data(mime_type_str, mime_data)?;
+                    }
+                    
+                    let pattern = cairo::SurfacePattern::create(&data_surface);
+
+                    pattern.set_extend(cairo::Extend::Repeat);
+
+                    Fill::Texture((pattern, img.width() as f64, repeat_width))
+
+                }
+                _ => { bail!("{:}:{:}: invalid fill type {:} for {:}",
+                             filename, lineno, ftype, item); }
+            };
+
+            let pidx_new = style.patterns.len();
+            style.patterns.push(fill);
+
+            for i in range.0..range.1 {
+
+                if style.pidx[i] != usize::MAX {
+                    bail!("{:}:{:} item {:} already set!",
+                          filename, lineno, item);
+                }
+
+                style.pidx[i] = pidx_new;
+                
+            }
+
+        }
+
+        for i in 0..NUM_FILLS {
+            if style.pidx[i] == usize::MAX {
+                bail!("{:}: not all fill items were set!", filename);
+            }
+        }
+
+        Ok(style)
+
 
     }
 
@@ -2251,7 +2494,7 @@ impl QuiltSpec {
                 break;
             }
 
-            qs.update_from(line.as_str()).chain_err(|| format!("{:}:{:}: parse error", filename, lineno))?;
+            qs.update_from(filename, line.as_str()).chain_err(|| format!("{:}:{:}: parse error", filename, lineno))?;
 
                     
         }
@@ -2626,6 +2869,12 @@ enum VAlign {
     Bottom
 }
 
+#[derive(Debug,PartialEq)]
+enum TextAsPath {
+    Yes,
+    No
+}
+
     
 
 trait CairoVecOps {
@@ -2635,15 +2884,16 @@ trait CairoVecOps {
     fn setcolor(&self, v: &Vec3d);
     fn drawtri(&self, p0: &Point2d, p1: &Point2d, p2: &Point2d);
     fn drawpoly(&self, poly: &Vec<Point2d>);
-    fn aligntext(&self, p: &Point2d, text: &str, ha: HAlign, va: VAlign);
-    fn showtext(&self, p: &Point2d, text: &str);
+    fn aligntext(&self, p: &Point2d, text: &str, ha: HAlign, va: VAlign, as_path: TextAsPath);
+    fn showtext(&self, p: &Point2d, text: &str, as_path: TextAsPath);
     fn translatep(&self, p: &Point2d);
     fn translatev(&self, p: &Vec2d);
 
     fn aligntext_extents(&self, p: &Point2d,
                         text: &str,
                         extents: &cairo::TextExtents,
-                        ha: HAlign, va: VAlign);
+                        ha: HAlign, va: VAlign, 
+    as_path: TextAsPath);
 
 }
 
@@ -2687,15 +2937,15 @@ impl CairoVecOps for cairo::Context {
         self.close_path();
     }
 
-    fn aligntext(&self, p: &Point2d, text: &str, ha: HAlign, va: VAlign) {
+    fn aligntext(&self, p: &Point2d, text: &str, ha: HAlign, va: VAlign, as_path: TextAsPath) {
 
         let extents = self.text_extents(text);
 
-        self.aligntext_extents(p, text, &extents, ha, va);
+        self.aligntext_extents(p, text, &extents, ha, va, as_path);
 
     }
 
-    fn aligntext_extents(&self, p: &Point2d, text: &str, extents: &cairo::TextExtents, ha: HAlign, va: VAlign) {
+    fn aligntext_extents(&self, p: &Point2d, text: &str, extents: &cairo::TextExtents, ha: HAlign, va: VAlign, as_path: TextAsPath) {
 
         let xoffs = match ha {
             HAlign::Left => 0.0,
@@ -2709,15 +2959,20 @@ impl CairoVecOps for cairo::Context {
             VAlign::Bottom => 0.0
         } * (extents.height + 2.0 * extents.y_bearing);
 
-        self.moveto(&(p + Vec2d::new(-xoffs, -yoffs)));
-        self.show_text(text);
+        self.showtext(&(p + Vec2d::new(-xoffs, -yoffs)),
+                      text, as_path);
 
     }
 
-    fn showtext(&self, p: &Point2d, text: &str) {
+    fn showtext(&self, p: &Point2d, text: &str, as_path: TextAsPath) {
 
         self.moveto(&p);
-        self.show_text(text);
+
+        if as_path == TextAsPath::No {
+            self.show_text(text);
+        } else {
+            self.text_path(text);
+        }
 
     }
 
@@ -2749,7 +3004,7 @@ struct PageSettings {
 
     frame: CoordinateFrame,
     draw_as_finished: bool,
-    two_color_palette: bool,
+    use_style: bool,
     label_htiles: bool,
     label_points: bool,
     show_seams: bool,
@@ -2807,7 +3062,8 @@ fn label_tri(ctx: &cairo::Context,
         ctx.rotate(vdiff.y.atan2(vdiff.x));
         ctx.set_font_size(1.3 * r);
         ctx.aligntext(&Point2d::origin(), text.as_str(), 
-                      HAlign::Center, VAlign::Center);
+                      HAlign::Center, VAlign::Center,
+                      TextAsPath::No);
         ctx.fill();
 
     });
@@ -2817,77 +3073,144 @@ fn label_tri(ctx: &cairo::Context,
 }
                     
 
+fn set_source_for_item(ctx: &cairo::Context,
+                       fill_idx: usize,
+                       draw_lengths: &DrawLengths,
+                       style: &Option<Style>,
+                       use_style: bool) -> Result<()> {
+
+    if use_style && style.is_some() {
+
+        let style = style.as_ref().unwrap();
+
+        let fill = &style.patterns[style.pidx[fill_idx]];
+
+        match fill {
+
+            Fill::RGB((r, g, b)) => {
+                let rgb = Vec3d::new(*r as f64, *g as f64, *b as f64);
+                ctx.setcolor(&(rgb/255.0));
+            },
+
+            Fill::Texture((pattern, pattern_width, repeat_width)) => { 
+
+                let scl = pattern_width / (draw_lengths.short_side_length * repeat_width);
+
+                let t = Vec2d::new_random() * *pattern_width;
+
+                let matrix = cairo::Matrix::new(scl, 0.0,
+                                                0.0, scl,
+                                                scl*t.x, scl*t.y);
+
+                pattern.set_matrix(matrix);
+                ctx.set_source(pattern);
+
+            },
+
+            _ => { bail!("waaah"); }
+
+        }
+
+    } else {
+
+        let (cidx, modifier) = match fill_idx {
+
+            0..=3 => (fill_idx, false),
+            4..=11 => ((fill_idx - 4) / 2, true),
+            12 => (0, true),
+            13 => (0, false),
+            _ => { bail!("invalid fill index"); }
+
+        };
+
+        let cidx = if use_style { cidx - cidx % 2 } else { cidx };
+
+        let c = COLORS[cidx];
+        let cv = Vec3d::new(c[0], c[1], c[2]);
+        let cv = cv * 0.125 + Vec3d::repeat(0.875);
+
+        let cv = if modifier { 
+            0.375*cv + 0.625*Vec3d::repeat(0.5)
+        } else {
+            cv
+        };
+
+        ctx.setcolor(&cv);
+
+    }
+
+    Ok(())
+
+}
+
 fn draw_triangles(ctx: &cairo::Context,
                   pt: &PenroseTiling,
                   child_leafs: &Vec<Vec<usize>>,
                   xpoints: &Vec<Point2d>,
                   draw_lengths: &DrawLengths,
                   tri_indices: &Vec<usize>,
-                  two_color_palette: bool,
+                  style: &Option<Style>,
+                  use_style: bool,
                   label_htiles: bool,
                   label_points: bool) -> Result<()> {
 
     let lw = draw_lengths.line_width;
 
-    ctx.setcolor(&Vec3d::repeat(0.6));
+    ctx.set_source_rgb(1.0, 0.0, 1.0);
     
-    with_save_restore!(ctx, { 
-        
-        ctx.set_line_join(cairo::LineJoin::Round);
-        ctx.set_line_cap(cairo::LineCap::Round);
-
-        ctx.set_line_width(lw);
-
-        for &i in tri_indices.iter() {
-
-            let t = &pt.htiles[i];
-            
-            let (p0, p1, p2) = t.get_points(&xpoints);
-            
-            ctx.drawtri(p0, p1, p2);
-
-        }
-
-        ctx.fill_preserve();
-        ctx.stroke();
-
-    });
-
+    
+    let offset = 0.002 * draw_lengths.short_side_length;
+    let nosnip = SnipCorners::No;
 
     for &i in tri_indices.iter() {
-
-        let t = &pt.htiles[i];
-
-        let mut cidx = tri_type_side_index(t.ttype, t.tside);
-
-        if two_color_palette {
-            cidx -= cidx % 2;
-        }
 
         for &c in &child_leafs[i] {
 
             let t = &pt.htiles[c];
             
-            let c = COLORS[cidx];
-            let cv = Vec3d::new(c[0], c[1], c[2]);
-            let cv = cv * 0.125 + Vec3d::repeat(0.875);
+            let cidx = tri_type_side_index(t.ttype, t.tside);
+
 
             let (p0, p1, p2) = t.get_points(&xpoints);
 
-            let (b0, b1, b2, _) = tri_border(p0, p1, p2, draw_lengths.line_inset, 0.25*lw)?;
+            let (b0, b1, b2, b3) = tri_border(p0, p1, p2, draw_lengths.line_inset)?;
 
-            ctx.setcolor(&(0.375*cv + 0.625*Vec3d::repeat(0.5)));
-            ctx.drawtri(p0, p1, p2);
-            ctx.fill();
+            let drawme = [
+                (cidx, vec![b2, b0, b1]),
+                (4 + 2*cidx + 0, vec![b0, b1, b3, *p0]),
+                (4 + 2*cidx + 1, vec![b2, b3, *p1, *p2])
+            ];
 
-            ctx.setcolor(&cv);
-            ctx.drawtri(&b0, &b1, &b2);
-            ctx.fill();
+            for (idx, poly) in &drawme {
+
+                let p0 = poly[0];
+                let p1 = poly[1];
+
+                let dir = p1 - p0;
+                let n = dir / dir.norm();
+
+                let theta = n.y.atan2(n.x);
+                
+                let rotation = Rotation2d::new(-theta);
+                let translation = Translation2d::new(-p0.x, -p0.y);
+
+                let transform = rotation * translation;
+
+                let poly = poly.iter().map(|p| transform * p).collect();
+                        
+                with_save_restore!(ctx, {
+                    ctx.translate(p0.x, p0.y);
+                    ctx.rotate(theta);
+                    ctx.drawpoly(&offset_convex_poly(&poly, offset, nosnip)?);
+                    set_source_for_item(ctx, *idx, draw_lengths, style, use_style)?;
+                    ctx.fill();
+                });
+                
+            }
 
         }
 
     }
-    
 
     if label_htiles {
 
@@ -2919,6 +3242,9 @@ fn draw_triangles(ctx: &cairo::Context,
             }
 
             ctx.set_font_size((0.25 * draw_lengths.short_side_length).min(12.0));
+            ctx.set_line_width(2.0 * lw);
+            ctx.set_line_join(cairo::LineJoin::Round);
+            ctx.set_line_cap(cairo::LineCap::Round);
 
             for &v in vpoints.iter() {
 
@@ -2926,7 +3252,13 @@ fn draw_triangles(ctx: &cairo::Context,
 
                 let text = format!("{:}", v);
 
-                ctx.aligntext(p, text.as_str(), HAlign::Center, VAlign::Center); 
+                ctx.aligntext(p, text.as_str(), HAlign::Center, VAlign::Center, TextAsPath::Yes); 
+                ctx.set_source_rgb(1.0, 1.0, 1.0);
+                ctx.stroke_preserve();
+
+                ctx.aligntext(p, text.as_str(), HAlign::Center, VAlign::Center, TextAsPath::No);
+                ctx.set_source_rgb(0.0, 0.0, 0.0);
+                ctx.fill();
                 
                 
             }
@@ -3002,8 +3334,6 @@ fn draw_quilt(ctx: &cairo::Context,
 
     with_save_restore!(ctx, { 
 
-        ctx.setcolor(&Vec3d::repeat(0.6));
-
         if pset.draw_as_finished {
 
             ctx.set_line_join(cairo::LineJoin::Miter);
@@ -3012,11 +3342,7 @@ fn draw_quilt(ctx: &cairo::Context,
 
                 with_save_restore!(ctx, {
                     
-                    let c = COLORS[0];
-                    let cv = Vec3d::new(c[0], c[1], c[2]);
-                    let cv = cv * 0.125 + Vec3d::repeat(0.875);
-                    
-                    ctx.setcolor(&cv);
+                    set_source_for_item(ctx, 13, &draw_lengths, &quilt.qs.style, pset.use_style)?;
                     ctx.drawpoly(&boxes.get(&RectDimType::Binding).unwrap());
                     ctx.set_line_width(2.0);
                     ctx.fill_preserve();
@@ -3025,7 +3351,8 @@ fn draw_quilt(ctx: &cairo::Context,
                 });
 
             }
-
+            
+            set_source_for_item(ctx, 12, &draw_lengths, &quilt.qs.style, pset.use_style)?;
             ctx.drawpoly(&boxes.get(&RectDimType::Border).unwrap());
             ctx.set_line_width(2.0);
             ctx.fill_preserve();
@@ -3044,7 +3371,8 @@ fn draw_quilt(ctx: &cairo::Context,
                        &xpoints, 
                        &draw_lengths,
                        tri_indices, 
-                       pset.two_color_palette,
+                       &quilt.qs.style,
+                       pset.use_style,
                        pset.label_htiles,
                        pset.label_points)?;
 
@@ -3137,7 +3465,8 @@ fn draw_quilt(ctx: &cairo::Context,
                 ctx.set_source_rgb(0.0, 0.0, 0.0);
 
                 ctx.aligntext_extents(&ctr, text, &extents,
-                                      HAlign::Center, VAlign::Center);
+                                      HAlign::Center, VAlign::Center,
+                                      TextAsPath::No);
 
                 ctx.fill();
 
@@ -3390,7 +3719,7 @@ fn assembly_drawable<'a>(ctx: &cairo::Context,
         };
        
         draw_triangles(ctx, &pt, &child_leafs, &pt.points, 
-                       &draw_lengths, &indices,
+                       &draw_lengths, &indices, &None,
                        false, true, false)?;
 
         if let Some(splits) = pt.tsplits.get(&0) {
@@ -3511,7 +3840,7 @@ fn draw_templates(ctx: &cairo::Context,
         let outer_tri = vec![*p0, *p1, *p2];
 
 
-        let (b0, b1, b2, b3) = tri_border(p0, p1, p2, line_inset*INCH, 0.0)?;
+        let (b0, b1, b2, b3) = tri_border(p0, p1, p2, line_inset*INCH)?;
 
         let inner = vec![b0, b1, b2];
         let border1 = vec![b0, b1, b3, *p0];
@@ -3683,7 +4012,7 @@ fn run() -> Result<()> {
     draw(&all_leaf_htiles, &landscape_rect, PageSettings {
         frame: CoordinateFrame::Design,
         draw_as_finished: false,
-        two_color_palette: true,
+        use_style: true,
         label_htiles: false,
         label_points: true,
         show_seams: false,
@@ -3695,7 +4024,7 @@ fn run() -> Result<()> {
     draw(&quilt.visible_leafs, &landscape_rect, PageSettings {
         frame: CoordinateFrame::Quilt,
         draw_as_finished: true,
-        two_color_palette: true,
+        use_style: true,
         label_htiles: false,
         label_points: false,
         show_seams: false,
@@ -3781,7 +4110,7 @@ fn run() -> Result<()> {
     draw(&quilt.visible_modules, &portrait_rect, PageSettings {
         frame: CoordinateFrame::Quilt,
         draw_as_finished: false,
-        two_color_palette: false,
+        use_style: false,
         label_htiles: true,
         label_points: false,
         show_seams: true,

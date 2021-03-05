@@ -1,0 +1,5 @@
+kite texture textures/kona_blue_bell.jpg 4.0
+dart texture textures/kona_champagne.jpg 4.0
+lines texture textures/kona_black.jpg 4.0
+border texture textures/kona_slate.jpg 4.0
+binding texture textures/kona_black.jpg 4.0
