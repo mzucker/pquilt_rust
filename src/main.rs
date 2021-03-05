@@ -1824,13 +1824,13 @@ enum RectType {
 
 
 #[derive(Debug,Clone)]
-enum Fill {
+enum Pattern {
     None,
-    RGB((u8, u8, u8)),
-    Texture((cairo::SurfacePattern, f64, f64)), 
+    Solid((f64, f64, f64)),
+    Surface((usize, f64)), 
 }
 
-impl Default for Fill {
+impl Default for Pattern {
     fn default() -> Self { Self::None }
 }
 
@@ -1843,17 +1843,17 @@ const NUM_FILLS: usize = FILL_BINDING + 1;
 // TODO: change into struct with vec + indexes
 #[derive(Debug,Clone)]
 struct Style {
-    patterns: Vec<Fill>,
-    textures: Vec<cairo::Surface>,
-    pidx: [usize; NUM_FILLS]
+    surface_patterns: Vec<(cairo::SurfacePattern, f64)>,
+    fills: Vec<Pattern>,
+    fidx: [usize; NUM_FILLS]
 }
 
 impl Default for Style {
     fn default() -> Self { 
         Self { 
-            patterns: vec![], 
-            textures: vec![],
-            pidx: [usize::MAX; NUM_FILLS]
+            surface_patterns: vec![],
+            fills: vec![], 
+            fidx: [usize::MAX; NUM_FILLS]
         }
     }
 }
@@ -2063,6 +2063,69 @@ fn rel_path(orig_filename: &str,
         Some(parent) => Path::join(parent, child_filename).into_os_string().into_string().unwrap()
 
     }
+
+}
+
+fn make_pattern(ifilename: &String) -> Result<(cairo::SurfacePattern, f64)> {
+
+    let ireader = ImageReader::open(ifilename.clone()).chain_err(
+        || format!("texture file not found: {:}", ifilename))?;
+
+    let iformat = ireader.format();
+
+    let img = ireader.decode()?.to_bgra8();
+
+    let format = cairo::Format::Rgb24;
+
+    let stride = match format.stride_for_width(img.width()) {
+        Ok(s) => (s as usize),
+        _ => { bail!("no stride for format :("); }
+    };
+
+
+    let min_stride = (img.width() * 4) as usize;
+    
+    debug_assert!(stride >= min_stride);
+
+    let mut buf: Vec<u8> = vec![];
+    let padding = vec![0u8; stride - min_stride];
+
+    for row in img.rows() {
+        
+        for pixel in row {
+            buf.extend(pixel.channels());
+        }
+        
+        buf.extend(&padding);
+
+    }
+
+    debug_assert!(buf.len() == (img.height() as usize) * stride);
+
+    let surface = cairo::ImageSurface::create_for_data(
+        buf, format,
+        img.width() as i32,
+        img.height() as i32,
+        stride as i32)?;
+
+    
+    let mime_type: Option<&str> = match iformat {
+        Some(image::ImageFormat::Jpeg) => Some(cairo::MIME_TYPE_JPEG),
+        Some(image::ImageFormat::Png)  => Some(cairo::MIME_TYPE_PNG),
+        _ => { None }
+
+    };
+
+    if let Some(mime_type_str) = mime_type {
+        let mime_data = std::fs::read(ifilename)?;
+        surface.set_mime_data(mime_type_str, mime_data)?;
+    }
+
+    let pattern = cairo::SurfacePattern::create(&surface);
+
+    pattern.set_extend(cairo::Extend::Repeat);
+
+    Ok((pattern, img.width() as f64))
 
 }
 
@@ -2313,6 +2376,8 @@ impl QuiltSpec {
 
         let mut style: Style = Default::default();
 
+        let mut image_lookup: HashMap<String, usize> = HashMap::new();
+
         let mut lineno = 0;
 
         loop {
@@ -2375,7 +2440,8 @@ impl QuiltSpec {
                     if indices.len() != 3 {
                         bail!("need RGB triplet!");
                     }
-                    Fill::RGB((indices[0], indices[1], indices[2]))
+                    let indices = indices.iter().map(|u| (*u as f64) / 255.0).collect::<Vec<f64>>();
+                    Pattern::Solid((indices[0], indices[1], indices[2]))
                 },
                 "texture" => {
 
@@ -2383,94 +2449,58 @@ impl QuiltSpec {
                         parse_tokens!(rest, {ifilename: String, 
                                              repeat_width: f64})?;
 
-
                     let ifilename = rel_path(filename, ifilename);
 
-                    let ireader = ImageReader::open(ifilename.clone()).chain_err(
-                        || format!("texture file not found: {:}", ifilename))?;
+                    let pidx = match image_lookup.entry(ifilename.clone()) {
 
-                    let iformat = ireader.format();
+                        Occupied(o) => {
+                            *o.get()
+                        },
 
-                    let img = ireader.decode()?.to_bgra8();
+                        Vacant(v) => {
 
-                    let format = cairo::Format::Rgb24;
+                            let pidx_new = style.surface_patterns.len();
 
-                    let stride = match format.stride_for_width(img.width()) {
-                        Ok(s) => (s as usize),
-                        _ => { bail!("no stride for format :("); }
-                    };
+                            style.surface_patterns.push(make_pattern(&ifilename)?);
 
+                            v.insert(pidx_new);
 
-                    let min_stride = (img.width() * 4) as usize;
-                    
-                    debug_assert!(stride >= min_stride);
-
-                    let mut buf: Vec<u8> = vec![];
-                    let padding = vec![0u8; stride - min_stride];
-
-                    for row in img.rows() {
-                        
-                        for pixel in row {
-                            buf.extend(pixel.channels());
+                            pidx_new
+                            
                         }
-                        
-                        buf.extend(&padding);
-
-                    }
-
-                    debug_assert!(buf.len() == (img.height() as usize) * stride);
-
-                    let data_surface = cairo::ImageSurface::create_for_data(
-                        buf, format,
-                        img.width() as i32,
-                        img.height() as i32,
-                        stride as i32)?;
-
-                    
-                    let mime_type: Option<&str> = match iformat {
-                        Some(image::ImageFormat::Jpeg) => Some(cairo::MIME_TYPE_JPEG),
-                        Some(image::ImageFormat::Png)  => Some(cairo::MIME_TYPE_PNG),
-                        _ => { None }
 
                     };
-
-                    if let Some(mime_type_str) = mime_type {
-                        let mime_data = std::fs::read(ifilename)?;
-                        data_surface.set_mime_data(mime_type_str, mime_data)?;
-                    }
-                    
-                    let pattern = cairo::SurfacePattern::create(&data_surface);
-
-                    pattern.set_extend(cairo::Extend::Repeat);
-
-                    Fill::Texture((pattern, img.width() as f64, repeat_width))
+                            
+                    Pattern::Surface((pidx, repeat_width))
 
                 }
                 _ => { bail!("{:}:{:}: invalid fill type {:} for {:}",
                              filename, lineno, ftype, item); }
             };
 
-            let pidx_new = style.patterns.len();
-            style.patterns.push(fill);
+            let fidx_new = style.fills.len();
+            style.fills.push(fill);
 
             for i in range.0..range.1 {
 
-                if style.pidx[i] != usize::MAX {
+                if style.fidx[i] != usize::MAX {
                     bail!("{:}:{:} item {:} already set!",
                           filename, lineno, item);
                 }
 
-                style.pidx[i] = pidx_new;
+                style.fidx[i] = fidx_new;
                 
             }
 
         }
 
         for i in 0..NUM_FILLS {
-            if style.pidx[i] == usize::MAX {
+            if style.fidx[i] == usize::MAX {
                 bail!("{:}: not all fill items were set!", filename);
             }
         }
+
+        println!("image_lookup: {:?}", image_lookup);
 
         Ok(style)
 
@@ -3083,16 +3113,17 @@ fn set_source_for_item(ctx: &cairo::Context,
 
         let style = style.as_ref().unwrap();
 
-        let fill = &style.patterns[style.pidx[fill_idx]];
+        let fill = &style.fills[style.fidx[fill_idx]];
 
         match fill {
 
-            Fill::RGB((r, g, b)) => {
-                let rgb = Vec3d::new(*r as f64, *g as f64, *b as f64);
-                ctx.setcolor(&(rgb/255.0));
+            Pattern::Solid((r, g, b)) => {
+                ctx.set_source_rgb(*r, *g, *b);
             },
 
-            Fill::Texture((pattern, pattern_width, repeat_width)) => { 
+            Pattern::Surface((pidx, repeat_width)) => { 
+
+                let (surface_pattern, pattern_width) = &style.surface_patterns[*pidx];
 
                 let scl = pattern_width / (draw_lengths.short_side_length * repeat_width);
 
@@ -3102,8 +3133,8 @@ fn set_source_for_item(ctx: &cairo::Context,
                                                 0.0, scl,
                                                 scl*t.x, scl*t.y);
 
-                pattern.set_matrix(matrix);
-                ctx.set_source(pattern);
+                surface_pattern.set_matrix(matrix);
+                ctx.set_source(surface_pattern);
 
             },
 
